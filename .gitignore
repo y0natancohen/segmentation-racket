@@ -157,9 +157,22 @@ dmypy.json
 *.pkl
 *.joblib
 
-# Project specific
+# Project specific artifacts
 models/
 output/
+test_output/
+__pycache__/
+
+# Runtime artifacts
+*.log
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Web server artifacts
+web_output/
+live_output/
 
 # Data directories
 data/
