@@ -91,8 +91,9 @@ def setup_web_display(port):
     import json
     from urllib.parse import urlparse, parse_qs
     
-    # Global variable to store the latest frame
+    # Global variables to store the latest frame and system info
     latest_frame_data = [None]
+    system_info = [{"fps": 0.0, "method": "RVM", "dsr": 0.25, "fp16": False}]
     
     class WebDisplayHandler(http.server.SimpleHTTPRequestHandler):
         def do_GET(self):
@@ -111,12 +112,33 @@ def setup_web_display(port):
                         .frame { margin: 10px 0; border: 2px solid #333; }
                         .frame img { width: 100%; height: auto; }
                         .status { background: #333; padding: 10px; margin: 10px 0; border-radius: 5px; }
+                        .info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin: 10px 0; }
+                        .info-card { background: #222; padding: 10px; border-radius: 5px; border-left: 4px solid #00ff00; }
+                        .info-label { font-size: 12px; color: #888; }
+                        .info-value { font-size: 18px; font-weight: bold; color: #00ff00; }
                     </style>
                 </head>
                 <body>
                     <div class="container">
                         <h1>Real-time Segmentation Demo</h1>
-                        <div class="status" id="status">Loading...</div>
+                        <div class="info-grid">
+                            <div class="info-card">
+                                <div class="info-label">FPS</div>
+                                <div class="info-value" id="fps">0.0</div>
+                            </div>
+                            <div class="info-card">
+                                <div class="info-label">Method</div>
+                                <div class="info-value" id="method">RVM</div>
+                            </div>
+                            <div class="info-card">
+                                <div class="info-label">Downsample Ratio</div>
+                                <div class="info-value" id="dsr">0.25</div>
+                            </div>
+                            <div class="info-card">
+                                <div class="info-label">FP16</div>
+                                <div class="info-value" id="fp16">False</div>
+                            </div>
+                        </div>
                         <div class="frame">
                             <img id="frame" src="/frame" alt="Live Feed">
                         </div>
@@ -125,7 +147,19 @@ def setup_web_display(port):
                         function updateFrame() {
                             document.getElementById('frame').src = '/frame?' + new Date().getTime();
                         }
+                        function updateInfo() {
+                            fetch('/info')
+                                .then(response => response.json())
+                                .then(data => {
+                                    document.getElementById('fps').textContent = data.fps.toFixed(1);
+                                    document.getElementById('method').textContent = data.method;
+                                    document.getElementById('dsr').textContent = data.dsr;
+                                    document.getElementById('fp16').textContent = data.fp16 ? 'True' : 'False';
+                                })
+                                .catch(err => console.log('Info update failed:', err));
+                        }
                         setInterval(updateFrame, 100); // Update every 100ms
+                        setInterval(updateInfo, 500); // Update info every 500ms
                     </script>
                 </body>
                 </html>
@@ -141,6 +175,12 @@ def setup_web_display(port):
                 else:
                     self.send_response(404)
                     self.end_headers()
+            elif self.path == '/info':
+                self.send_response(200)
+                self.send_header('Content-type', 'application/json')
+                self.send_header('Cache-Control', 'no-cache')
+                self.end_headers()
+                self.wfile.write(json.dumps(system_info[0]).encode())
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -148,7 +188,7 @@ def setup_web_display(port):
     handler = WebDisplayHandler
     httpd = socketserver.TCPServer(("", port), handler)
     print(f"Web display server started at http://localhost:{port}")
-    return httpd, handler, latest_frame_data
+    return httpd, handler, latest_frame_data, system_info
 
 def main():
     a = parse_args()
@@ -235,9 +275,10 @@ def main():
     web_server = None
     web_handler = None
     latest_frame_data = None
+    system_info = None
     if display_mode == "web":
         try:
-            web_server, web_handler, latest_frame_data = setup_web_display(a.web_port)
+            web_server, web_handler, latest_frame_data, system_info = setup_web_display(a.web_port)
             import threading
             web_thread = threading.Thread(target=web_server.serve_forever, daemon=True)
             web_thread.start()
@@ -293,6 +334,15 @@ def main():
             status_text = f"FPS:{fps:5.1f} Method:{method_text}"
             if use_rvm:
                 status_text += f" dsr={a.dsr} fp16={a.fp16}"
+            
+            # Update system info for web display
+            if system_info is not None:
+                system_info[0] = {
+                    "fps": fps,
+                    "method": method_text,
+                    "dsr": a.dsr,
+                    "fp16": a.fp16
+                }
             
             cv2.putText(view, status_text, (12,28),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,0), 3, cv2.LINE_AA)
