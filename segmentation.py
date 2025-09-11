@@ -12,6 +12,9 @@ Examples:
   # Live display with alpha channel
   python segmentation.py --live_display --show_alpha
   
+  # Web display (works without GUI support)
+  python segmentation.py --web_display --show_alpha
+  
   # Save original images and segmentation maps
   python segmentation.py --save_images --save_segmentation --output_dir my_output
   
@@ -36,6 +39,8 @@ Examples:
     p.add_argument("--save_segmentation", action="store_true", help="Save segmentation maps")
     p.add_argument("--save_composite", action="store_true", help="Save composite images")
     p.add_argument("--live_display", action="store_true", help="Display live on screen (overrides headless)")
+    p.add_argument("--web_display", action="store_true", help="Display in web browser using simple HTTP server")
+    p.add_argument("--web_port", type=int, default=8080, help="Port for web display")
     return p.parse_args()
 
 def to_torch_image(frame_bgr, device, half):
@@ -77,6 +82,73 @@ def simple_background_removal(frame, bg):
     result = frame * mask_3ch + bg * (1 - mask_3ch)
     
     return result.astype(np.uint8), mask
+
+def setup_web_display(port):
+    """Setup simple HTTP server for web display"""
+    import http.server
+    import socketserver
+    import threading
+    import json
+    from urllib.parse import urlparse, parse_qs
+    
+    # Global variable to store the latest frame
+    latest_frame_data = [None]
+    
+    class WebDisplayHandler(http.server.SimpleHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == '/':
+                self.send_response(200)
+                self.send_header('Content-type', 'text/html')
+                self.end_headers()
+                html = """
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Real-time Segmentation</title>
+                    <style>
+                        body { margin: 0; padding: 20px; background: #000; color: #fff; font-family: Arial; }
+                        .container { max-width: 1200px; margin: 0 auto; }
+                        .frame { margin: 10px 0; border: 2px solid #333; }
+                        .frame img { width: 100%; height: auto; }
+                        .status { background: #333; padding: 10px; margin: 10px 0; border-radius: 5px; }
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <h1>Real-time Segmentation Demo</h1>
+                        <div class="status" id="status">Loading...</div>
+                        <div class="frame">
+                            <img id="frame" src="/frame" alt="Live Feed">
+                        </div>
+                    </div>
+                    <script>
+                        function updateFrame() {
+                            document.getElementById('frame').src = '/frame?' + new Date().getTime();
+                        }
+                        setInterval(updateFrame, 100); // Update every 100ms
+                    </script>
+                </body>
+                </html>
+                """
+                self.wfile.write(html.encode())
+            elif self.path.startswith('/frame'):
+                if latest_frame_data[0] is not None:
+                    self.send_response(200)
+                    self.send_header('Content-type', 'image/jpeg')
+                    self.send_header('Cache-Control', 'no-cache')
+                    self.end_headers()
+                    self.wfile.write(latest_frame_data[0])
+                else:
+                    self.send_response(404)
+                    self.end_headers()
+            else:
+                self.send_response(404)
+                self.end_headers()
+    
+    handler = WebDisplayHandler
+    httpd = socketserver.TCPServer(("", port), handler)
+    print(f"Web display server started at http://localhost:{port}")
+    return httpd, handler, latest_frame_data
 
 def main():
     a = parse_args()
@@ -126,8 +198,25 @@ def main():
     last = time.time(); fps = 0.0
     frame_count = 0
     
+    # Check GUI support
+    gui_supported = True
+    try:
+        test_img = np.zeros((100, 100, 3), dtype=np.uint8)
+        cv2.imshow("test", test_img)
+        cv2.destroyAllWindows()
+    except:
+        gui_supported = False
+        print("GUI display not supported - OpenCV compiled without GUI support")
+    
     # Determine display mode
-    display_mode = "live" if a.live_display else ("headless" if a.headless else "live")
+    if a.web_display:
+        display_mode = "web"
+    elif a.live_display and gui_supported:
+        display_mode = "live"
+    elif a.headless or not gui_supported:
+        display_mode = "headless"
+    else:
+        display_mode = "live" if gui_supported else "headless"
     
     # Create output directories if saving
     if a.save_images or a.save_segmentation or a.save_composite or a.headless:
@@ -141,6 +230,21 @@ def main():
         print(f"Output will be saved to: {a.output_dir}")
     
     print(f"Running in {display_mode} mode")
+    
+    # Setup web display if requested
+    web_server = None
+    web_handler = None
+    latest_frame_data = None
+    if display_mode == "web":
+        try:
+            web_server, web_handler, latest_frame_data = setup_web_display(a.web_port)
+            import threading
+            web_thread = threading.Thread(target=web_server.serve_forever, daemon=True)
+            web_thread.start()
+        except Exception as e:
+            print(f"Failed to start web server: {e}")
+            print("Falling back to headless mode")
+            display_mode = "headless"
 
     with torch.inference_mode():
         while True:
@@ -220,8 +324,13 @@ def main():
                 if frame_count % 30 == 0:  # Print progress every 30 frames
                     print(f"Processed {frame_count} frames...")
 
-            # Display live if requested or if not in headless mode
-            if display_mode == "live":
+            # Display based on mode
+            if display_mode == "web":
+                # Send frame to web display
+                if latest_frame_data is not None:
+                    _, buffer = cv2.imencode('.jpg', view)
+                    latest_frame_data[0] = buffer.tobytes()
+            elif display_mode == "live":
                 window_title = "Real-time Segmentation Demo - q to quit"
                 try:
                     cv2.imshow(window_title, view)
