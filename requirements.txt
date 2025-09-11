@@ -1,0 +1,9 @@
+# PyTorch with CUDA 12.1 support
+--index-url https://download.pytorch.org/whl/cu121
+torch
+torchvision
+
+# Computer Vision dependencies
+opencv-python
+numpy
+pillow
