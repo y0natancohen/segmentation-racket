@@ -5,7 +5,22 @@ sys.path.append('rvm')
 from model import MattingNetwork
 
 def parse_args():
-    p = argparse.ArgumentParser(description="RVM webcam demo")
+    p = argparse.ArgumentParser(description="Real-time Segmentation Demo with RVM", 
+                               formatter_class=argparse.RawDescriptionHelpFormatter,
+                               epilog="""
+Examples:
+  # Live display with alpha channel
+  python segmentation.py --live_display --show_alpha
+  
+  # Save original images and segmentation maps
+  python segmentation.py --save_images --save_segmentation --output_dir my_output
+  
+  # Save composite images only
+  python segmentation.py --save_composite --headless
+  
+  # Live display with custom background
+  python segmentation.py --live_display --bg solid --solid_bgr 255 0 0
+                               """)
     p.add_argument("--cam", type=int, default=0)
     p.add_argument("--width", type=int, default=1280)
     p.add_argument("--height", type=int, default=720)
@@ -17,6 +32,10 @@ def parse_args():
     p.add_argument("--show_alpha", action="store_true")
     p.add_argument("--headless", action="store_true", help="Run without GUI display")
     p.add_argument("--output_dir", type=str, default="output", help="Output directory for saved frames")
+    p.add_argument("--save_images", action="store_true", help="Save original images")
+    p.add_argument("--save_segmentation", action="store_true", help="Save segmentation maps")
+    p.add_argument("--save_composite", action="store_true", help="Save composite images")
+    p.add_argument("--live_display", action="store_true", help="Display live on screen (overrides headless)")
     return p.parse_args()
 
 def to_torch_image(frame_bgr, device, half):
@@ -107,10 +126,21 @@ def main():
     last = time.time(); fps = 0.0
     frame_count = 0
     
-    # Create output directory if in headless mode
-    if a.headless:
+    # Determine display mode
+    display_mode = "live" if a.live_display else ("headless" if a.headless else "live")
+    
+    # Create output directories if saving
+    if a.save_images or a.save_segmentation or a.save_composite or a.headless:
         os.makedirs(a.output_dir, exist_ok=True)
-        print(f"Running in headless mode. Output will be saved to: {a.output_dir}")
+        if a.save_images:
+            os.makedirs(os.path.join(a.output_dir, "images"), exist_ok=True)
+        if a.save_segmentation:
+            os.makedirs(os.path.join(a.output_dir, "segmentation"), exist_ok=True)
+        if a.save_composite:
+            os.makedirs(os.path.join(a.output_dir, "composite"), exist_ok=True)
+        print(f"Output will be saved to: {a.output_dir}")
+    
+    print(f"Running in {display_mode} mode")
 
     with torch.inference_mode():
         while True:
@@ -137,16 +167,20 @@ def main():
                 com = fgr * pha + bgT.unsqueeze(0) * (1 - pha)  # from RVM README
                 com = (com.clamp(0,1)[0].permute(1,2,0).cpu().numpy()*255).astype(np.uint8)
                 com_bgr = cv2.cvtColor(com, cv2.COLOR_RGB2BGR)
+                
+                # Extract segmentation map (alpha channel)
+                seg_map = (pha[0,0].cpu().numpy()*255).astype(np.uint8)
+                seg_map_bgr = cv2.cvtColor(seg_map, cv2.COLOR_GRAY2BGR)
 
-                view = np.hstack([frame, com_bgr, cv2.cvtColor((pha[0,0].cpu().numpy()*255).astype(np.uint8), cv2.COLOR_GRAY2BGR)]) \
-                       if a.show_alpha else com_bgr
+                view = np.hstack([frame, com_bgr, seg_map_bgr]) if a.show_alpha else com_bgr
             else:
                 # Use simple OpenCV-based background removal
                 com_bgr, mask = simple_background_removal(frame, bg)
+                seg_map = mask
+                seg_map_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
                 
                 if a.show_alpha:
-                    mask_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-                    view = np.hstack([frame, com_bgr, mask_bgr])
+                    view = np.hstack([frame, com_bgr, seg_map_bgr])
                 else:
                     view = com_bgr
 
@@ -161,15 +195,33 @@ def main():
             cv2.putText(view, status_text, (12,28),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,255), 1, cv2.LINE_AA)
 
-            if a.headless:
-                # Save frame in headless mode
-                output_path = os.path.join(a.output_dir, f"frame_{frame_count:06d}.jpg")
-                cv2.imwrite(output_path, view)
+            # Save individual components if requested
+            if a.save_images or a.save_segmentation or a.save_composite or a.headless:
+                frame_id = f"{frame_count:06d}"
+                
+                if a.save_images:
+                    img_path = os.path.join(a.output_dir, "images", f"image_{frame_id}.jpg")
+                    cv2.imwrite(img_path, frame)
+                
+                if a.save_segmentation:
+                    seg_path = os.path.join(a.output_dir, "segmentation", f"seg_{frame_id}.jpg")
+                    cv2.imwrite(seg_path, seg_map)
+                
+                if a.save_composite:
+                    comp_path = os.path.join(a.output_dir, "composite", f"comp_{frame_id}.jpg")
+                    cv2.imwrite(comp_path, com_bgr)
+                
+                # Save combined view in headless mode (legacy behavior)
+                if a.headless and not (a.save_images or a.save_segmentation or a.save_composite):
+                    output_path = os.path.join(a.output_dir, f"frame_{frame_id}.jpg")
+                    cv2.imwrite(output_path, view)
+                
                 frame_count += 1
                 if frame_count % 30 == 0:  # Print progress every 30 frames
                     print(f"Processed {frame_count} frames...")
-            else:
-                # Display in GUI mode
+
+            # Display live if requested or if not in headless mode
+            if display_mode == "live":
                 window_title = "Real-time Segmentation Demo - q to quit"
                 try:
                     cv2.imshow(window_title, view)
@@ -177,8 +229,9 @@ def main():
                 except cv2.error as e:
                     print(f"GUI display error: {e}")
                     print("Switching to headless mode...")
-                    a.headless = True
-                    os.makedirs(a.output_dir, exist_ok=True)
+                    display_mode = "headless"
+                    if not (a.save_images or a.save_segmentation or a.save_composite):
+                        os.makedirs(a.output_dir, exist_ok=True)
 
     cap.release(); cv2.destroyAllWindows()
 
