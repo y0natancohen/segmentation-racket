@@ -89,11 +89,11 @@ export class MainScene extends Phaser.Scene {
       if (walls.left) walls.left.restitution = 0.95;
       if (walls.right) walls.right.restitution = 0.95;
 
-      // Optional: reduce wall friction too
-      if (walls.top) walls.top.friction = 0;
-      if (walls.bottom) walls.bottom.friction = 0;
-      if (walls.left) walls.left.friction = 0;
-      if (walls.right) walls.right.friction = 0;
+      // Minimal wall friction for realistic physics
+      if (walls.top) walls.top.friction = 0.001;
+      if (walls.bottom) walls.bottom.friction = 0.001;
+      if (walls.left) walls.left.friction = 0.001;
+      if (walls.right) walls.right.friction = 0.001;
     }
 
     // Floating black rectangle that moves up and down
@@ -104,7 +104,6 @@ export class MainScene extends Phaser.Scene {
     this.platform.setFriction(0.001);
     this.platform.setFrictionStatic(0.001);
 
-    // Initialize WebSocket connection to rectangle generator
     this.initializeWebSocketConnection();
 
     // Initialize FPS tracking
@@ -144,16 +143,12 @@ export class MainScene extends Phaser.Scene {
       return true; // Keep in array
     });
 
-    // Update platform movement from WebSocket data
     this.updatePlatformFromWebSocket();
     
-    // Handle connection retry if needed
     this.handleConnectionRetry();
     
-    // Update FPS display
     this.updateFpsDisplay();
     
-    // Update status display (more frequently for real-time info)
     this.updateStatusDisplay();
   }
 
