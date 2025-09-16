@@ -13,14 +13,11 @@ from model import MattingNetwork
 
 
 def parse_args():
-    p = argparse.ArgumentParser(description="Real-time Segmentation Demo with RVM", 
+    p = argparse.ArgumentParser(description="Real-time Segmentation Demo", 
                                formatter_class=argparse.RawDescriptionHelpFormatter,
                                epilog="""
 Examples:
-  # Live display with alpha channel
-  python segmentation.py --live_display --show_alpha
-  
-  # Web display (works without GUI support)
+  # Web display with alpha channel
   python segmentation.py --web_display --show_alpha
   
   # Save original images and segmentation maps
@@ -29,14 +26,14 @@ Examples:
   # Save composite images only
   python segmentation.py --save_composite --headless
   
-  # Save polygon images with display
-  python segmentation.py --save_polygon --show_polygon --live_display
+  # Save polygon images with web display
+  python segmentation.py --save_polygon --show_polygon --web_display
   
   # Show thresholded segmentation map
-  python segmentation.py --show_threshold --show_alpha --live_display
+  python segmentation.py --show_threshold --show_alpha --web_display
   
-  # Live display with custom background
-  python segmentation.py --live_display --bg solid --solid_bgr 255 0 0
+  # Web display with custom background
+  python segmentation.py --web_display --bg solid --solid_bgr 255 0 0
                                """)
     p.add_argument("--cam", type=int, default=0)
     p.add_argument("--width", type=int, default=1280)
@@ -58,7 +55,6 @@ Examples:
     p.add_argument("--polygon_threshold", type=float, default=0.5, help="Threshold for polygon extraction")
     p.add_argument("--polygon_min_area", type=int, default=2000, help="Minimum area for polygon extraction")
     p.add_argument("--polygon_epsilon", type=float, default=0.0015, help="Epsilon ratio for polygon simplification")
-    p.add_argument("--live_display", action="store_true", help="Display live on screen (overrides headless)")
     p.add_argument("--web_display", action="store_true", help="Display in web browser using simple HTTP server")
     p.add_argument("--web_port", type=int, default=8080, help="Port for web display")
     return p.parse_args()
@@ -75,33 +71,6 @@ def to_torch_bg(image_bgr, device, half):
     if half and device.type == "cuda": ten = ten.half()
     return ten
 
-def simple_background_removal(frame, bg):
-    """Simple background removal using color-based segmentation"""
-    # Convert to HSV for better color segmentation
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    
-    # Define range for skin color (adjust these values as needed)
-    lower_skin = np.array([0, 20, 70], dtype=np.uint8)
-    upper_skin = np.array([20, 255, 255], dtype=np.uint8)
-    
-    # Create mask for skin color
-    mask = cv2.inRange(hsv, lower_skin, upper_skin)
-    
-    # Apply morphological operations to clean up the mask
-    kernel = np.ones((3,3), np.uint8)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
-    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-    
-    # Apply Gaussian blur to smooth the mask
-    mask = cv2.GaussianBlur(mask, (5, 5), 0)
-    
-    # Convert mask to 3-channel
-    mask_3ch = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR) / 255.0
-    
-    # Apply the mask
-    result = frame * mask_3ch + bg * (1 - mask_3ch)
-    
-    return result.astype(np.uint8), mask
 
 def check_port_available(port):
     """Check if a port is available, raise error if not"""
@@ -233,31 +202,25 @@ def main():
     print("device:", dev)
 
     # Load RVM (MobileNetV3 = fast) - Using local submodule
-    try:
-        # Create model directory if it doesn't exist
-        model_dir = "models"
-        os.makedirs(model_dir, exist_ok=True)
-        
-        # Download model weights if not present
-        model_path = os.path.join(model_dir, "rvm_mobilenetv3.pth")
-        if not os.path.exists(model_path):
-            print("Downloading RVM MobileNetV3 model weights...")
-            import urllib.request
-            url = "https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3.pth"
-            urllib.request.urlretrieve(url, model_path)
-            print("Model weights downloaded successfully!")
-        
-        # Load the model
-        model = MattingNetwork('mobilenetv3').eval().to(dev)
-        model.load_state_dict(torch.load(model_path, map_location=dev, weights_only=True))
-        if a.fp16 and dev.type == "cuda": 
-            model = model.half()
-        use_rvm = True
-        print("RVM model loaded successfully from local submodule!")
-    except Exception as e:
-        print(f"Failed to load RVM model: {e}")
-        print("Using OpenCV-based background removal as fallback...")
-        use_rvm = False
+    # Create model directory if it doesn't exist
+    model_dir = "models"
+    os.makedirs(model_dir, exist_ok=True)
+    
+    # Download model weights if not present
+    model_path = os.path.join(model_dir, "rvm_mobilenetv3.pth")
+    if not os.path.exists(model_path):
+        print("Downloading RVM MobileNetV3 model weights...")
+        import urllib.request
+        url = "https://github.com/PeterL1n/RobustVideoMatting/releases/download/v1.0.0/rvm_mobilenetv3.pth"
+        urllib.request.urlretrieve(url, model_path)
+        print("Model weights downloaded successfully!")
+    
+    # Load the model
+    model = MattingNetwork('mobilenetv3').eval().to(dev)
+    model.load_state_dict(torch.load(model_path, map_location=dev, weights_only=True))
+    if a.fp16 and dev.type == "cuda": 
+        model = model.half()
+    print("RVM model loaded successfully from local submodule!")
 
     cap = cv2.VideoCapture(a.cam)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, a.width)
@@ -275,25 +238,11 @@ def main():
     last = time.time(); fps = 0.0
     frame_count = 0
     
-    # Check GUI support
-    gui_supported = True
-    try:
-        test_img = np.zeros((100, 100, 3), dtype=np.uint8)
-        cv2.imshow("test", test_img)
-        cv2.destroyAllWindows()
-    except:
-        gui_supported = False
-        print("GUI display not supported - OpenCV compiled without GUI support")
-    
     # Determine display mode
     if a.web_display:
         display_mode = "web"
-    elif a.live_display and gui_supported:
-        display_mode = "live"
-    elif a.headless or not gui_supported:
-        display_mode = "headless"
     else:
-        display_mode = "live" if gui_supported else "headless"
+        display_mode = "headless"
     
     # Create output directories if saving
     if a.save_images or a.save_segmentation or a.save_composite or a.save_polygon or a.headless:
@@ -338,9 +287,6 @@ def main():
                 web_server.shutdown()
                 web_server.server_close()
             cap.release()
-            # Only try to destroy windows if GUI is supported
-            if gui_supported:
-                cv2.destroyAllWindows()
         except Exception as e:
             print(f"Error during shutdown: {e}")
         finally:
@@ -366,106 +312,62 @@ def main():
             else:
                 bg = np.zeros((H,W,3), dtype=np.uint8)
 
-            if use_rvm:
-                # Use RVM model
-                src = to_torch_image(frame, dev, a.fp16)
-                bgT = to_torch_bg(bg, dev, a.fp16)
+            # Use RVM model
+            src = to_torch_image(frame, dev, a.fp16)
+            bgT = to_torch_bg(bg, dev, a.fp16)
 
-                fgr, pha, rec[0], rec[1], rec[2], rec[3] = model(src, rec[0], rec[1], rec[2], rec[3], a.dsr)
-                com = fgr * pha + bgT.unsqueeze(0) * (1 - pha)  # from RVM README
-                com = (com.clamp(0,1)[0].permute(1,2,0).cpu().numpy()*255).astype(np.uint8)
-                com_bgr = cv2.cvtColor(com, cv2.COLOR_RGB2BGR)
-                
-                # Extract segmentation map (alpha channel)
-                seg_map = (pha[0,0].cpu().numpy()*255).astype(np.uint8)
-                seg_map_bgr = cv2.cvtColor(seg_map, cv2.COLOR_GRAY2BGR)
-                
-                # Generate polygon from segmentation map
-                polygon = None
-                thresholded_mask = None
-                if a.save_polygon or a.show_polygon or a.show_threshold:
-                    # Convert segmentation map to float32 for polygon extraction
-                    pha_float = pha[0,0].cpu().numpy().astype(np.float32)
-                    if a.show_threshold:
-                        polygon, thresholded_mask = matte_to_polygon(
-                            pha_float, 
-                            threshold=a.polygon_threshold,
-                            min_area=a.polygon_min_area,
-                            epsilon_ratio=a.polygon_epsilon,
-                            return_mask=True
-                        )
-                    else:
-                        polygon = matte_to_polygon(
-                            pha_float, 
-                            threshold=a.polygon_threshold,
-                            min_area=a.polygon_min_area,
-                            epsilon_ratio=a.polygon_epsilon
-                        )
-
-                # Build view with different components
-                view_components = [frame, com_bgr, seg_map_bgr]
-                
-                # Add thresholded mask if requested
-                if a.show_threshold and thresholded_mask is not None:
-                    thresholded_bgr = cv2.cvtColor(thresholded_mask, cv2.COLOR_GRAY2BGR)
-                    view_components.append(thresholded_bgr)
-                
-                if a.show_alpha or a.show_threshold:
-                    view = np.hstack(view_components)
+            fgr, pha, rec[0], rec[1], rec[2], rec[3] = model(src, rec[0], rec[1], rec[2], rec[3], a.dsr)
+            com = fgr * pha + bgT.unsqueeze(0) * (1 - pha)  # from RVM README
+            com = (com.clamp(0,1)[0].permute(1,2,0).cpu().numpy()*255).astype(np.uint8)
+            com_bgr = cv2.cvtColor(com, cv2.COLOR_RGB2BGR)
+            
+            # Extract segmentation map (alpha channel)
+            seg_map = (pha[0,0].cpu().numpy()*255).astype(np.uint8)
+            seg_map_bgr = cv2.cvtColor(seg_map, cv2.COLOR_GRAY2BGR)
+            
+            # Generate polygon from segmentation map
+            polygon = None
+            thresholded_mask = None
+            if a.save_polygon or a.show_polygon or a.show_threshold:
+                # Convert segmentation map to float32 for polygon extraction
+                pha_float = pha[0,0].cpu().numpy().astype(np.float32)
+                if a.show_threshold:
+                    polygon, thresholded_mask = matte_to_polygon(
+                        pha_float, 
+                        threshold=a.polygon_threshold,
+                        min_area=a.polygon_min_area,
+                        epsilon_ratio=a.polygon_epsilon,
+                        return_mask=True
+                    )
                 else:
-                    view = com_bgr
+                    polygon = matte_to_polygon(
+                        pha_float, 
+                        threshold=a.polygon_threshold,
+                        min_area=a.polygon_min_area,
+                        epsilon_ratio=a.polygon_epsilon
+                    )
+
+            # Build view with different components
+            view_components = [frame, com_bgr, seg_map_bgr]
+            
+            # Add thresholded mask if requested
+            if a.show_threshold and thresholded_mask is not None:
+                thresholded_bgr = cv2.cvtColor(thresholded_mask, cv2.COLOR_GRAY2BGR)
+                view_components.append(thresholded_bgr)
+            
+            if a.show_alpha or a.show_threshold:
+                view = np.hstack(view_components)
             else:
-                # Use simple OpenCV-based background removal
-                com_bgr, mask = simple_background_removal(frame, bg)
-                seg_map = mask
-                seg_map_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
-                
-                # Generate polygon from segmentation map
-                polygon = None
-                thresholded_mask = None
-                if a.save_polygon or a.show_polygon or a.show_threshold:
-                    # Convert mask to float32 for polygon extraction
-                    mask_float = mask.astype(np.float32) / 255.0
-                    if a.show_threshold:
-                        polygon, thresholded_mask = matte_to_polygon(
-                            mask_float, 
-                            threshold=a.polygon_threshold,
-                            min_area=a.polygon_min_area,
-                            epsilon_ratio=a.polygon_epsilon,
-                            return_mask=True
-                        )
-                    else:
-                        polygon = matte_to_polygon(
-                            mask_float, 
-                            threshold=a.polygon_threshold,
-                            min_area=a.polygon_min_area,
-                            epsilon_ratio=a.polygon_epsilon
-                        )
-                
-                # Build view with different components
-                view_components = [frame, com_bgr, seg_map_bgr]
-                
-                # Add thresholded mask if requested
-                if a.show_threshold and thresholded_mask is not None:
-                    thresholded_bgr = cv2.cvtColor(thresholded_mask, cv2.COLOR_GRAY2BGR)
-                    view_components.append(thresholded_bgr)
-                
-                if a.show_alpha or a.show_threshold:
-                    view = np.hstack(view_components)
-                else:
-                    view = com_bgr
+                view = com_bgr
 
             now = time.time(); fps = 0.9*fps + 0.1*(1.0/(now-last)); last = now
-            method_text = "RVM" if use_rvm else "OpenCV"
-            status_text = f"FPS:{fps:5.1f} Method:{method_text}"
-            if use_rvm:
-                status_text += f" dsr={a.dsr} fp16={a.fp16}"
+            status_text = f"FPS:{fps:5.1f} Method:RVM dsr={a.dsr} fp16={a.fp16}"
             
             # Update system info for web display
             if system_info is not None:
                 system_info[0] = {
                     "fps": fps,
-                    "method": method_text,
+                    "method": "RVM",
                     "dsr": a.dsr,
                     "fp16": a.fp16
                 }
@@ -542,23 +444,9 @@ def main():
                 if latest_frame_data is not None:
                     _, buffer = cv2.imencode('.jpg', view)
                     latest_frame_data[0] = buffer.tobytes()
-            elif display_mode == "live":
-                window_title = "Real-time Segmentation Demo - q to quit"
-                try:
-                    cv2.imshow(window_title, view)
-                    if cv2.waitKey(1) & 0xFF == ord('q'): break
-                except cv2.error as e:
-                    print(f"GUI display error: {e}")
-                    print("Switching to headless mode...")
-                    display_mode = "headless"
-                    if not (a.save_images or a.save_segmentation or a.save_composite):
-                        os.makedirs(a.output_dir, exist_ok=True)
 
     # Cleanup
     cap.release()
-    # Only try to destroy windows if GUI is supported
-    if gui_supported:
-        cv2.destroyAllWindows()
     if web_server is not None:
         print("Shutting down web server...")
         web_server.shutdown()
