@@ -31,14 +31,14 @@ print_error() {
 }
 
 # Check if we're in the right directory
-if [ ! -f "rectangle_generator.py" ]; then
-    print_error "rectangle_generator.py not found. Please run from project root."
+if [ ! -f "polygon_generator.py" ]; then
+    print_error "polygon_generator.py not found. Please run from project root."
     exit 1
 fi
 
 # Clean up any existing processes
 print_status "Cleaning up existing processes..."
-pkill -f "rectangle_generator.py" 2>/dev/null || true
+pkill -f "polygon_generator.py" 2>/dev/null || true
 pkill -f "npm run dev" 2>/dev/null || true
 pkill -f "vite" 2>/dev/null || true
 sleep 1
@@ -58,7 +58,7 @@ else
     exit 1
 fi
 
-if python3 -m pytest test_rectangle_generator.py -v; then
+if python3 -m pytest test_polygon_generator.py -v; then
     print_success "Python unit tests passed"
 else
     print_error "Python unit tests failed"
@@ -98,7 +98,7 @@ print_status "Running end-to-end integration test..."
 # Start Python generator in background
 cd /home/jonathan/segment_project
 # Use the virtual environment Python
-.venv/bin/python3 rectangle_generator.py polygon_config/rectangle.json &
+.venv/bin/python3 polygon_generator.py polygon_config/rectangle.json &
 PYTHON_PID=$!
 
 # Wait for server to start
@@ -159,7 +159,7 @@ if .venv/bin/python3 -c "
 import time
 import sys
 sys.path.insert(0, '.')
-from rectangle_generator import PolygonGenerator
+from polygon_generator import PolygonGenerator
 
 # Test message generation performance
 generator = PolygonGenerator(fps=60)

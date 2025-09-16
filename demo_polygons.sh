@@ -19,7 +19,7 @@ run_polygon_demo() {
     echo ""
     
     # Start the polygon generator
-    python3 rectangle_generator.py "$config_file" &
+    python3 polygon_generator.py "$config_file" &
     local python_pid=$!
     
     # Start the game
@@ -40,7 +40,7 @@ run_polygon_demo() {
     # Clean up
     kill $python_pid 2>/dev/null
     kill $node_pid 2>/dev/null
-    pkill -f "rectangle_generator.py" 2>/dev/null
+    pkill -f "polygon_generator.py" 2>/dev/null
     pkill -f "npm run dev" 2>/dev/null
     pkill -f "vite" 2>/dev/null
     
@@ -57,9 +57,9 @@ run_polygon_demo "polygon_config/octagon.json" "Octagon"
 echo "🎉 All polygon demos completed!"
 echo ""
 echo "To run a specific polygon:"
-echo "  python3 rectangle_generator.py polygon_config/rectangle.json"
-echo "  python3 rectangle_generator.py polygon_config/triangle.json"
-echo "  python3 rectangle_generator.py polygon_config/octagon.json"
+echo "  python3 polygon_generator.py polygon_config/rectangle.json"
+echo "  python3 polygon_generator.py polygon_config/triangle.json"
+echo "  python3 polygon_generator.py polygon_config/octagon.json"
 echo ""
 echo "Then start the game with:"
 echo "  cd phaser-matter-game && npm run dev"

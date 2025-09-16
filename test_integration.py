@@ -18,7 +18,7 @@ from unittest.mock import patch
 # Add the current directory to the path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from rectangle_generator import PolygonGenerator
+from polygon_generator import PolygonGenerator
 
 
 class TestWebSocketIntegration(unittest.IsolatedAsyncioTestCase):

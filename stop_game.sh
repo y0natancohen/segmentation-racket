@@ -7,7 +7,7 @@ echo "🛑 Stopping Dual-Process Game Architecture"
 echo "=========================================="
 
 echo "🧹 Killing Python rectangle generator processes..."
-pkill -f "rectangle_generator.py" 2>/dev/null || true
+pkill -f "polygon_generator.py" 2>/dev/null || true
 
 echo "🧹 Killing TypeScript/Vite processes..."
 pkill -f "npm run dev" 2>/dev/null || true

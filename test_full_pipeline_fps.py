@@ -32,7 +32,7 @@ class FullPipelineFPSTest:
             try:
                 # Import and run the generator directly
                 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-                from rectangle_generator import main
+                from polygon_generator import main
                 asyncio.run(main())
             except Exception as e:
                 print(f"Python generator error: {e}")

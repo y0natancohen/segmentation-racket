@@ -5,7 +5,7 @@ This project implements a dual-process architecture where polygon movement is ge
 ## 🏗️ Architecture Overview
 
 ### **Process 1: Python Polygon Generator**
-- **File**: `rectangle_generator.py`
+- **File**: `polygon_generator.py`
 - **Purpose**: Generates polygon movement data at 60 FPS
 - **Communication**: WebSocket server on `localhost:8765`
 - **Movement**: Sine wave up-down motion (2-second cycle) with rotation
@@ -62,13 +62,13 @@ The Python generator sends abstract polygon data:
 ### **Option 2: Different Polygon Shapes**
 ```bash
 # Rectangle (default)
-python3 rectangle_generator.py polygon_config/rectangle.json
+python3 polygon_generator.py polygon_config/rectangle.json
 
 # Triangle
-python3 rectangle_generator.py polygon_config/triangle.json
+python3 polygon_generator.py polygon_config/triangle.json
 
 # Octagon
-python3 rectangle_generator.py polygon_config/octagon.json
+python3 polygon_generator.py polygon_config/octagon.json
 ```
 
 ### **Option 3: Demo All Shapes**
@@ -89,9 +89,9 @@ If you encounter "address already in use" errors:
 pip install -r requirements_rectangle.txt
 ```
 
-2. **Start rectangle generator:**
+2. **Start polygon generator:**
 ```bash
-python3 rectangle_generator.py
+python3 polygon_generator.py
 ```
 
 3. **Start Phaser game (in another terminal):**
@@ -123,9 +123,9 @@ interface RectangleMessage {
 
 ## ⚙️ Configuration
 
-### **Rectangle Movement Parameters**
+### **Polygon Movement Parameters**
 ```python
-# In rectangle_generator.py
+# In polygon_generator.py
 self.size = 600              # Game board size
 self.amplitude = 90          # Movement range (15% of size)
 self.center_y = 330          # Center Y position (55% of size)
@@ -160,7 +160,7 @@ private connectionRetryDelay: number = 2000; // 2 seconds
 
 ### **Performance Optimized**
 - **Low latency**: Direct localhost WebSocket communication
-- **High frequency**: 60 FPS rectangle updates
+- **High frequency**: 60 FPS polygon updates
 - **Smooth interpolation**: Message buffering and linear interpolation
 - **Precise timing**: Frame-accurate movement generation
 - **Efficient**: Minimal message overhead
@@ -182,7 +182,7 @@ private connectionRetryDelay: number = 2000; // 2 seconds
 ```
 
 ### **WebSocket Connection Issues**
-1. Check if Python process is running: `ps aux | grep rectangle_generator`
+1. Check if Python process is running: `ps aux | grep polygon_generator`
 2. Verify port 8765 is available: `netstat -tlnp | grep 8765`
 3. Check browser console for WebSocket errors
 
@@ -200,15 +200,15 @@ private connectionRetryDelay: number = 2000; // 2 seconds
 
 ### **Python Process Logs**
 ```
-Starting rectangle generator server on localhost:8765
+Starting polygon generator server on localhost:8765
 Target FPS: 20
 Client connected. Total clients: 1
 ```
 
 ### **TypeScript Game Logs**
 ```
-Connecting to rectangle generator WebSocket...
-Connected to rectangle generator
+Connecting to polygon generator WebSocket...
+Connected to polygon generator
 ```
 
 ## 🧪 Testing
@@ -219,7 +219,7 @@ Connected to rectangle generator
 ./run_tests.sh
 
 # Run only Python tests
-python3 -m pytest test_rectangle_generator.py -v
+python3 -m pytest test_polygon_generator.py -v
 python3 -m pytest test_integration.py -v
 
 # Run only TypeScript tests
@@ -231,21 +231,21 @@ npm run test:coverage
 ```
 
 ### **Test Coverage**
-- **Python Unit Tests**: Rectangle generator functionality, movement calculations, message formatting
+- **Python Unit Tests**: Polygon generator functionality, movement calculations, message formatting
 - **Python Integration Tests**: WebSocket communication, multi-client support, performance
 - **TypeScript Unit Tests**: Game scene logic, WebSocket handling, interpolation
 - **End-to-End Tests**: Complete dual-process communication
 - **Performance Tests**: Message generation speed, interpolation performance
 
 ### **Test Files**
-- `test_rectangle_generator.py` - Python unit tests
+- `test_polygon_generator.py` - Python unit tests
 - `test_integration.py` - Python integration tests  
 - `phaser-matter-game/src/test_main.ts` - TypeScript unit tests
 - `run_tests.sh` - Complete test runner
 
 ## 🔮 Future Enhancements
 
-- **Multiple moving objects**: Extend to support multiple rectangles
+- **Multiple moving objects**: Extend to support multiple polygons
 - **Complex movements**: Add more sophisticated movement patterns
 - **Performance monitoring**: Add FPS and latency metrics
 - **Configuration UI**: Web interface for adjusting parameters
@@ -256,5 +256,5 @@ npm run test:coverage
 - **WebSocket Library**: Python `websockets` package
 - **Message Format**: JSON for easy debugging
 - **Error Recovery**: Automatic reconnection with exponential backoff
-- **Process Isolation**: Rectangle generation doesn't affect game performance
+- **Process Isolation**: Polygon generation doesn't affect game performance
 - **Cross-platform**: Works on Linux, macOS, Windows

@@ -13,7 +13,7 @@ echo "🔷 Using polygon config: $POLYGON_CONFIG"
 
 # Clean up any existing processes first
 echo "🧹 Cleaning up existing processes..."
-pkill -f "rectangle_generator.py" 2>/dev/null || true
+pkill -f "polygon_generator.py" 2>/dev/null || true
 pkill -f "npm run dev" 2>/dev/null || true
 pkill -f "vite" 2>/dev/null || true
 sleep 1
@@ -55,7 +55,7 @@ cleanup() {
     
     # Force kill any remaining processes
     echo "   - Cleaning up any remaining processes..."
-    pkill -f "rectangle_generator.py" 2>/dev/null || true
+    pkill -f "polygon_generator.py" 2>/dev/null || true
     pkill -f "npm run dev" 2>/dev/null || true
     pkill -f "vite" 2>/dev/null || true
     
@@ -75,12 +75,12 @@ echo "🚀 Starting Python polygon generator..."
 # Check if port 8765 is available
 if lsof -Pi :8765 -sTCP:LISTEN -t >/dev/null 2>&1; then
     echo "⚠️  Port 8765 is still in use, force killing processes..."
-    pkill -f "rectangle_generator.py" 2>/dev/null || true
+    pkill -f "polygon_generator.py" 2>/dev/null || true
     sleep 2
 fi
 
 cd /home/jonathan/segment_project
-python3 rectangle_generator.py "$POLYGON_CONFIG" &
+python3 polygon_generator.py "$POLYGON_CONFIG" &
 PYTHON_PID=$!
 
 # Wait a moment for the Python server to start

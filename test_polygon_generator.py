@@ -16,7 +16,7 @@ import os
 # Add the current directory to the path so we can import rectangle_generator
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from rectangle_generator import PolygonGenerator
+from polygon_generator import PolygonGenerator
 
 
 class TestPolygonGenerator(unittest.TestCase):
@@ -193,7 +193,7 @@ class TestPolygonGeneratorAsync(unittest.IsolatedAsyncioTestCase):
     async def test_websocket_server_startup(self):
         """Test that the WebSocket server can start up."""
         # Mock the websockets.serve function
-        with patch('rectangle_generator.websockets.serve') as mock_serve:
+        with patch('polygon_generator.websockets.serve') as mock_serve:
             # Create a proper async mock that can be awaited
             async def mock_serve_func(*args, **kwargs):
                 return AsyncMock()
@@ -258,7 +258,7 @@ class TestPolygonGeneratorAsync(unittest.IsolatedAsyncioTestCase):
         
         # Start broadcasting
         self.generator.running = True
-        broadcast_task = asyncio.create_task(self.generator.broadcast_rectangle_data())
+        broadcast_task = asyncio.create_task(self.generator.broadcast_polygon_data())
         
         # Let it run for a short time
         await asyncio.sleep(0.1)
@@ -296,7 +296,7 @@ class TestPolygonGeneratorAsync(unittest.IsolatedAsyncioTestCase):
         
         # Start broadcasting
         self.generator.running = True
-        broadcast_task = asyncio.create_task(self.generator.broadcast_rectangle_data())
+        broadcast_task = asyncio.create_task(self.generator.broadcast_polygon_data())
         
         # Let it run for a short time
         await asyncio.sleep(0.1)

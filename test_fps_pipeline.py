@@ -31,7 +31,7 @@ class FPSTestPipeline:
         
         # Start Python process
         self.python_process = subprocess.Popen(
-            [sys.executable, "rectangle_generator.py"],
+            [sys.executable, "polygon_generator.py"],
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True
@@ -247,7 +247,7 @@ class FPSTestPipeline:
         
         # Additional cleanup
         try:
-            subprocess.run(["pkill", "-f", "rectangle_generator.py"], check=False)
+            subprocess.run(["pkill", "-f", "polygon_generator.py"], check=False)
             subprocess.run(["pkill", "-f", "npm run dev"], check=False)
             subprocess.run(["pkill", "-f", "vite"], check=False)
         except Exception as e:

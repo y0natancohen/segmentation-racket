@@ -127,7 +127,7 @@ async def test_pipeline_fps(duration_seconds: int = 5):
         
         # Additional cleanup
         try:
-            subprocess.run(["pkill", "-f", "rectangle_generator.py"], check=False)
+            subprocess.run(["pkill", "-f", "polygon_generator.py"], check=False)
             subprocess.run(["pkill", "-f", "npm run dev"], check=False)
             subprocess.run(["pkill", "-f", "vite"], check=False)
         except Exception as e:

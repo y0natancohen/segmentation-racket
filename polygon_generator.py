@@ -124,8 +124,8 @@ class PolygonGenerator:
             self.clients.remove(websocket)
             print(f"Client disconnected. Total clients: {len(self.clients)}")
     
-    async def broadcast_rectangle_data(self):
-        """Broadcast rectangle position data to all connected clients."""
+    async def broadcast_polygon_data(self):
+        """Broadcast polygon position data to all connected clients."""
         next_frame_time = time.time()
         
         while self.running:
@@ -169,7 +169,7 @@ class PolygonGenerator:
     
     async def start_server(self):
         """Start the WebSocket server."""
-        print(f"Starting rectangle generator server on {self.host}:{self.port}")
+        print(f"Starting polygon generator server on {self.host}:{self.port}")
         print(f"Target FPS: {self.fps}")
         print(f"Frame duration: {self.frame_duration:.4f}s ({1000/self.fps:.1f}ms)")
         print(f"Movement parameters: amplitude={self.amplitude}, frequency={self.frequency}Hz")
@@ -185,7 +185,7 @@ class PolygonGenerator:
         self.running = True
         
         # Start broadcasting in background
-        broadcast_task = asyncio.create_task(self.broadcast_rectangle_data())
+        broadcast_task = asyncio.create_task(self.broadcast_polygon_data())
         
         try:
             # Keep server running
@@ -202,7 +202,7 @@ class PolygonGenerator:
     
     def stop(self):
         """Stop the server gracefully."""
-        print("Stopping rectangle generator...")
+        print("Stopping polygon generator...")
         self.running = False
         if self.server:
             self.server.close()

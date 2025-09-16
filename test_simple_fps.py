@@ -14,7 +14,7 @@ import os
 # Add current directory to path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from rectangle_generator import RectangleGenerator
+from polygon_generator import PolygonGenerator
 
 
 async def test_direct_fps(duration_seconds: int = 5):
@@ -23,7 +23,7 @@ async def test_direct_fps(duration_seconds: int = 5):
     print("=" * 40)
     
     # Create generator
-    generator = RectangleGenerator(fps=60)
+    generator = PolygonGenerator(fps=60)
     print(f"✅ Created generator with FPS: {generator.fps}")
     
     # Start server
