@@ -2,6 +2,11 @@
 """
 Rectangle Generator Process
 Generates rectangle movement data at 60 FPS and sends via WebSocket to main process.
+
+Message Format:
+{
+    "position": {"x": float, "y": float}
+}
 """
 
 import asyncio
@@ -45,21 +50,11 @@ class RectangleGenerator:
         y_offset = self.amplitude * math.sin(phase)
         y_position = self.center_y + y_offset
         
-        # Calculate velocity for prediction/extrapolation
-        velocity_y = self.amplitude * self.frequency * 2 * math.pi * math.cos(phase)
-        
         return {
-            "timestamp": current_time,
             "position": {
                 "x": self.size / 2,  # Fixed X position
                 "y": y_position
-            },
-            "velocity": {
-                "x": 0.0,
-                "y": velocity_y
-            },
-            "phase": phase,
-            "elapsed_time": elapsed_time
+            }
         }
     
     async def register_client(self, websocket, path):

@@ -1,11 +1,7 @@
 import Phaser from "phaser";
 
 interface RectangleMessage {
-  timestamp: number;
   position: { x: number; y: number };
-  velocity: { x: number; y: number };
-  phase: number;
-  elapsed_time: number;
 }
 
 export class MainScene extends Phaser.Scene {
@@ -136,7 +132,6 @@ export class MainScene extends Phaser.Scene {
     this.statusText.setScrollFactor(0); // Keep text fixed on screen
     this.statusText.setDepth(1000); // Ensure it's on top
 
-    // (Later) you'll add "draw lines" -> convert to thin static rectangles per segment.
   }
 
   update() {
@@ -178,14 +173,12 @@ export class MainScene extends Phaser.Scene {
     if (ball.body && 'angularDamping' in ball.body) {
       (ball.body as any).angularDamping = 0.001; // tiny spin damp
     }
-    // Removed setFixedRotation() so balls can roll naturally
     
     // Add to balls array for tracking
     this.balls.push(ball);
     
     return ball;
   }
-
 
   private initializeWebSocketConnection(): void {
     try {
@@ -245,8 +238,6 @@ export class MainScene extends Phaser.Scene {
       }
     }
   }
-
-
 
   private updateFpsDisplay(): void {
     const currentTime = this.time.now;
