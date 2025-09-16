@@ -1,8 +1,16 @@
-import argparse, time, cv2, torch, numpy as np, os
-from PIL import Image
+import os
 import sys
+import time
+import argparse
+
+import cv2
+import torch
+import numpy as np
+from PIL import Image
+
 sys.path.append('rvm')
 from model import MattingNetwork
+
 
 def parse_args():
     p = argparse.ArgumentParser(description="Real-time Segmentation Demo with RVM", 
@@ -21,6 +29,12 @@ Examples:
   # Save composite images only
   python segmentation.py --save_composite --headless
   
+  # Save polygon images with display
+  python segmentation.py --save_polygon --show_polygon --live_display
+  
+  # Show thresholded segmentation map
+  python segmentation.py --show_threshold --show_alpha --live_display
+  
   # Live display with custom background
   python segmentation.py --live_display --bg solid --solid_bgr 255 0 0
                                """)
@@ -38,6 +52,12 @@ Examples:
     p.add_argument("--save_images", action="store_true", help="Save original images")
     p.add_argument("--save_segmentation", action="store_true", help="Save segmentation maps")
     p.add_argument("--save_composite", action="store_true", help="Save composite images")
+    p.add_argument("--save_polygon", action="store_true", help="Save polygon images")
+    p.add_argument("--show_polygon", action="store_true", help="Display polygon overlay on the view")
+    p.add_argument("--show_threshold", action="store_true", help="Display thresholded segmentation map")
+    p.add_argument("--polygon_threshold", type=float, default=0.5, help="Threshold for polygon extraction")
+    p.add_argument("--polygon_min_area", type=int, default=2000, help="Minimum area for polygon extraction")
+    p.add_argument("--polygon_epsilon", type=float, default=0.0015, help="Epsilon ratio for polygon simplification")
     p.add_argument("--live_display", action="store_true", help="Display live on screen (overrides headless)")
     p.add_argument("--web_display", action="store_true", help="Display in web browser using simple HTTP server")
     p.add_argument("--web_port", type=int, default=8080, help="Port for web display")
@@ -259,7 +279,7 @@ def main():
         display_mode = "live" if gui_supported else "headless"
     
     # Create output directories if saving
-    if a.save_images or a.save_segmentation or a.save_composite or a.headless:
+    if a.save_images or a.save_segmentation or a.save_composite or a.save_polygon or a.headless:
         os.makedirs(a.output_dir, exist_ok=True)
         if a.save_images:
             os.makedirs(os.path.join(a.output_dir, "images"), exist_ok=True)
@@ -267,6 +287,8 @@ def main():
             os.makedirs(os.path.join(a.output_dir, "segmentation"), exist_ok=True)
         if a.save_composite:
             os.makedirs(os.path.join(a.output_dir, "composite"), exist_ok=True)
+        if a.save_polygon:
+            os.makedirs(os.path.join(a.output_dir, "polygon"), exist_ok=True)
         print(f"Output will be saved to: {a.output_dir}")
     
     print(f"Running in {display_mode} mode")
@@ -316,16 +338,79 @@ def main():
                 # Extract segmentation map (alpha channel)
                 seg_map = (pha[0,0].cpu().numpy()*255).astype(np.uint8)
                 seg_map_bgr = cv2.cvtColor(seg_map, cv2.COLOR_GRAY2BGR)
+                
+                # Generate polygon from segmentation map
+                polygon = None
+                thresholded_mask = None
+                if a.save_polygon or a.show_polygon or a.show_threshold:
+                    # Convert segmentation map to float32 for polygon extraction
+                    pha_float = pha[0,0].cpu().numpy().astype(np.float32)
+                    if a.show_threshold:
+                        polygon, thresholded_mask = matte_to_polygon(
+                            pha_float, 
+                            threshold=a.polygon_threshold,
+                            min_area=a.polygon_min_area,
+                            epsilon_ratio=a.polygon_epsilon,
+                            return_mask=True
+                        )
+                    else:
+                        polygon = matte_to_polygon(
+                            pha_float, 
+                            threshold=a.polygon_threshold,
+                            min_area=a.polygon_min_area,
+                            epsilon_ratio=a.polygon_epsilon
+                        )
 
-                view = np.hstack([frame, com_bgr, seg_map_bgr]) if a.show_alpha else com_bgr
+                # Build view with different components
+                view_components = [frame, com_bgr, seg_map_bgr]
+                
+                # Add thresholded mask if requested
+                if a.show_threshold and thresholded_mask is not None:
+                    thresholded_bgr = cv2.cvtColor(thresholded_mask, cv2.COLOR_GRAY2BGR)
+                    view_components.append(thresholded_bgr)
+                
+                if a.show_alpha or a.show_threshold:
+                    view = np.hstack(view_components)
+                else:
+                    view = com_bgr
             else:
                 # Use simple OpenCV-based background removal
                 com_bgr, mask = simple_background_removal(frame, bg)
                 seg_map = mask
                 seg_map_bgr = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
                 
-                if a.show_alpha:
-                    view = np.hstack([frame, com_bgr, seg_map_bgr])
+                # Generate polygon from segmentation map
+                polygon = None
+                thresholded_mask = None
+                if a.save_polygon or a.show_polygon or a.show_threshold:
+                    # Convert mask to float32 for polygon extraction
+                    mask_float = mask.astype(np.float32) / 255.0
+                    if a.show_threshold:
+                        polygon, thresholded_mask = matte_to_polygon(
+                            mask_float, 
+                            threshold=a.polygon_threshold,
+                            min_area=a.polygon_min_area,
+                            epsilon_ratio=a.polygon_epsilon,
+                            return_mask=True
+                        )
+                    else:
+                        polygon = matte_to_polygon(
+                            mask_float, 
+                            threshold=a.polygon_threshold,
+                            min_area=a.polygon_min_area,
+                            epsilon_ratio=a.polygon_epsilon
+                        )
+                
+                # Build view with different components
+                view_components = [frame, com_bgr, seg_map_bgr]
+                
+                # Add thresholded mask if requested
+                if a.show_threshold and thresholded_mask is not None:
+                    thresholded_bgr = cv2.cvtColor(thresholded_mask, cv2.COLOR_GRAY2BGR)
+                    view_components.append(thresholded_bgr)
+                
+                if a.show_alpha or a.show_threshold:
+                    view = np.hstack(view_components)
                 else:
                     view = com_bgr
 
@@ -348,9 +433,30 @@ def main():
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,0), 3, cv2.LINE_AA)
             cv2.putText(view, status_text, (12,28),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,255), 1, cv2.LINE_AA)
+            
+            # Add polygon overlay if requested
+            if a.show_polygon and polygon is not None:
+                # Draw polygon on the view
+                view = draw_polygon_on_image(view, polygon, color=(0, 255, 0), thickness=2)
+                
+                # Add polygon info to status
+                polygon_info = f" Polygon: {len(polygon)} vertices"
+                cv2.putText(view, polygon_info, (12, 60),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,0), 3, cv2.LINE_AA)
+                cv2.putText(view, polygon_info, (12, 60),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1, cv2.LINE_AA)
+            
+            # Add threshold info if threshold display is enabled
+            if a.show_threshold:
+                threshold_info = f" Threshold: {a.polygon_threshold}"
+                y_pos = 90 if a.show_polygon and polygon is not None else 60
+                cv2.putText(view, threshold_info, (12, y_pos),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,0), 3, cv2.LINE_AA)
+                cv2.putText(view, threshold_info, (12, y_pos),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1, cv2.LINE_AA)
 
             # Save individual components if requested
-            if a.save_images or a.save_segmentation or a.save_composite or a.headless:
+            if a.save_images or a.save_segmentation or a.save_composite or a.save_polygon or a.headless:
                 frame_id = f"{frame_count:06d}"
                 
                 if a.save_images:
@@ -364,6 +470,21 @@ def main():
                 if a.save_composite:
                     comp_path = os.path.join(a.output_dir, "composite", f"comp_{frame_id}.jpg")
                     cv2.imwrite(comp_path, com_bgr)
+                
+                if a.save_polygon and polygon is not None:
+                    # Create polygon visualization image
+                    poly_img = frame.copy()
+                    poly_img = draw_polygon_on_image(poly_img, polygon, color=(0, 255, 0), thickness=3)
+                    
+                    # Add polygon info text
+                    poly_info = f"Vertices: {len(polygon)}"
+                    cv2.putText(poly_img, poly_info, (12, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0,0,0), 3, cv2.LINE_AA)
+                    cv2.putText(poly_img, poly_info, (12, 30),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,255), 1, cv2.LINE_AA)
+                    
+                    poly_path = os.path.join(a.output_dir, "polygon", f"poly_{frame_id}.jpg")
+                    cv2.imwrite(poly_path, poly_img)
                 
                 # Save combined view in headless mode (legacy behavior)
                 if a.headless and not (a.save_images or a.save_segmentation or a.save_composite):
@@ -393,6 +514,98 @@ def main():
                         os.makedirs(a.output_dir, exist_ok=True)
 
     cap.release(); cv2.destroyAllWindows()
+
+
+def matte_to_polygon(pha, threshold=0.5, min_area=2000, epsilon_ratio=0.015, use_skimage=False, return_mask=False):
+    """
+    pha: 2D float32 array in [0,1] (alpha matte)
+    threshold: binarization threshold for foreground
+    min_area: ignore tiny contours below this many pixels
+    epsilon_ratio: Douglas-Peucker epsilon as a fraction of perimeter
+    use_skimage: if True, use skimage.measure.find_contours (subpixel)
+    return_mask: if True, return both polygon and thresholded mask
+    Returns: Nx2 float32 array of (x,y) polygon vertices, or None if none found.
+             If return_mask=True, returns (polygon, thresholded_mask) tuple.
+    """
+    H, W = pha.shape[:2]
+
+    # 1) Smooth and threshold
+    m = cv2.GaussianBlur(pha, (0,0), 1.2)
+    mask = (m >= threshold).astype(np.uint8) * 255
+
+    # 2) Morphology to clean noise & holes
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5,5))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k, iterations=1)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k, iterations=2)
+
+    # 3) Contour extraction
+    if not use_skimage:
+        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not cnts: 
+            return (None, mask) if return_mask else None
+        cnt = max(cnts, key=cv2.contourArea)
+        if cv2.contourArea(cnt) < min_area: 
+            return (None, mask) if return_mask else None
+        peri = cv2.arcLength(cnt, True)
+        eps  = epsilon_ratio * peri
+        poly = cv2.approxPolyDP(cnt, eps, True)  # Douglas–Peucker
+        poly = poly.reshape(-1, 2).astype(np.float32)
+        return (poly, mask) if return_mask else poly
+    else:
+        # Subpixel option via marching squares
+        from skimage import measure
+        # find_contours returns (row, col) in float coords
+        contours = measure.find_contours(mask.astype(np.float32)/255.0, 0.5)
+        if not contours: 
+            return (None, mask) if return_mask else None
+        # choose largest by polygon area (convert to x,y)
+        def area_xy(pts):
+            x = pts[:,1]; y = pts[:,0]
+            return 0.5*np.abs(np.dot(x, np.roll(y,-1)) - np.dot(y, np.roll(x,-1)))
+        largest = max(contours, key=lambda c: area_xy(c))
+        xy = np.stack([largest[:,1], largest[:,0]], axis=1).astype(np.float32)  # (x,y)
+        # Optional: simplify with RDP (OpenCV needs integer input; cast then back)
+        xy_int = xy.astype(np.int32).reshape(-1,1,2)
+        peri = cv2.arcLength(xy_int, True)
+        eps  = epsilon_ratio * peri
+        approx = cv2.approxPolyDP(xy_int, eps, True).reshape(-1,2).astype(np.float32)
+        return (approx, mask) if return_mask else approx
+
+
+def draw_polygon_on_image(image, polygon, color=(0, 255, 0), thickness=2, fill_alpha=0.3):
+    """
+    Draw polygon on image with optional fill.
+    
+    Args:
+        image: BGR image array
+        polygon: Nx2 array of (x,y) vertices
+        color: BGR color tuple
+        thickness: line thickness (-1 for filled)
+        fill_alpha: transparency for fill (0.0 = transparent, 1.0 = opaque)
+    
+    Returns:
+        Image with polygon drawn
+    """
+    if polygon is None or len(polygon) < 3:
+        return image
+    
+    # Convert to integer coordinates
+    pts = polygon.astype(np.int32)
+    
+    # Create overlay for transparency
+    overlay = image.copy()
+    
+    # Draw filled polygon if thickness is -1
+    if thickness == -1:
+        cv2.fillPoly(overlay, [pts], color)
+        # Blend with original image
+        image = cv2.addWeighted(image, 1 - fill_alpha, overlay, fill_alpha, 0)
+    else:
+        # Draw polygon outline
+        cv2.polylines(image, [pts], True, color, thickness)
+    
+    return image
+
 
 if __name__ == "__main__":
     main()

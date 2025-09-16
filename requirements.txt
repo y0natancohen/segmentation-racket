@@ -12,3 +12,6 @@ pillow
 # Python dependencies for polygon generator
 websockets
 asyncio
+
+# testing
+pytest
