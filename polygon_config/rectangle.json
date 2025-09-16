@@ -1,0 +1,12 @@
+{
+  "name": "rectangle",
+  "description": "Standard rectangle shape",
+  "vertices": [
+    {"x": -50, "y": -25},
+    {"x": 50, "y": -25},
+    {"x": 50, "y": 25},
+    {"x": -50, "y": 25}
+  ],
+  "center_offset": {"x": 0, "y": 0},
+  "scale": 1.0
+}

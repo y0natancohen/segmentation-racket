@@ -1,10 +1,15 @@
 #!/bin/bash
 
 # Start Game Script
-# Runs both the Python rectangle generator and the TypeScript Phaser game
+# Runs both the Python polygon generator and the TypeScript Phaser game
+# Usage: ./start_game.sh [polygon_config_file]
 
 echo "🎮 Starting Dual-Process Game Architecture"
 echo "=========================================="
+
+# Get polygon config file from command line argument or use default
+POLYGON_CONFIG=${1:-"polygon_config/rectangle.json"}
+echo "🔷 Using polygon config: $POLYGON_CONFIG"
 
 # Clean up any existing processes first
 echo "🧹 Cleaning up existing processes..."
@@ -65,7 +70,7 @@ cleanup() {
 trap cleanup SIGINT SIGTERM
 
 echo ""
-echo "🚀 Starting Python rectangle generator..."
+echo "🚀 Starting Python polygon generator..."
 
 # Check if port 8765 is available
 if lsof -Pi :8765 -sTCP:LISTEN -t >/dev/null 2>&1; then
@@ -75,7 +80,7 @@ if lsof -Pi :8765 -sTCP:LISTEN -t >/dev/null 2>&1; then
 fi
 
 cd /home/jonathan/segment_project
-python3 rectangle_generator.py &
+python3 rectangle_generator.py "$POLYGON_CONFIG" &
 PYTHON_PID=$!
 
 # Wait a moment for the Python server to start
@@ -97,11 +102,11 @@ NODE_PID=$!
 
 echo ""
 echo "✅ Both processes started successfully!"
-echo "   - Python rectangle generator (PID: $PYTHON_PID)"
+echo "   - Python polygon generator (PID: $PYTHON_PID)"
 echo "   - TypeScript game (PID: $NODE_PID)"
 echo ""
 echo "🌐 Game should be available at: http://localhost:5173"
-echo "📡 Rectangle generator WebSocket: ws://localhost:8765"
+echo "📡 Polygon generator WebSocket: ws://localhost:8765"
 echo ""
 echo "Press Ctrl+C to stop both processes"
 

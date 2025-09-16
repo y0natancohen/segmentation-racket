@@ -1,22 +1,25 @@
 import Phaser from "phaser";
 
-interface RectangleMessage {
+interface PolygonMessage {
   position: { x: number; y: number };
+  vertices: { x: number; y: number }[];
+  rotation: number;
 }
 
 export class MainScene extends Phaser.Scene {
   private balls: Phaser.Physics.Matter.Image[] = [];
   // @ts-ignore - Used for timer callback side effects
   private ballSpawnTimer!: Phaser.Time.TimerEvent;
-  private platform!: Phaser.Physics.Matter.Image;
+  private platform!: Phaser.GameObjects.Graphics;
+  private platformBody!: MatterJS.BodyType;
   
-  // WebSocket connection for rectangle data
+  // WebSocket connection for polygon data
   private ws: WebSocket | null = null;
   private connectionRetryTimer: number = 0;
   private connectionRetryDelay: number = 2000; // 2 seconds
   
   // Latest message storage
-  private latestMessage: RectangleMessage | null = null;
+  private latestMessage: PolygonMessage | null = null;
   
   // FPS monitoring
   private fpsText!: Phaser.GameObjects.Text;
@@ -96,13 +99,8 @@ export class MainScene extends Phaser.Scene {
       if (walls.right) walls.right.friction = 0.001;
     }
 
-    // Floating black rectangle that moves up and down
-    this.platform = this.matter.add.image(size / 2, size * 0.7, "plat");
-    this.platform.setStatic(true);
-    // Platform (static) but still allowed to have restitution/friction:
-    this.platform.setBounce(0.95);
-    this.platform.setFriction(0.001);
-    this.platform.setFrictionStatic(0.001);
+    // Create initial polygon platform (will be updated from WebSocket data)
+    this.createPolygonPlatform(size / 2, size * 0.7);
 
     this.initializeWebSocketConnection();
 
@@ -152,6 +150,86 @@ export class MainScene extends Phaser.Scene {
     this.updateStatusDisplay();
   }
 
+  private createPolygonPlatform(x: number, y: number): void {
+    // Create a graphics object to draw the polygon
+    this.platform = this.add.graphics();
+    this.platform.setPosition(x, y);
+    
+    // Create initial Matter.js body for physics (will be updated with real vertices)
+    const initialVertices = [
+      { x: -50, y: -25 },
+      { x: 50, y: -25 },
+      { x: 50, y: 25 },
+      { x: -50, y: 25 }
+    ];
+    
+    // Create physics body from vertices
+    this.platformBody = this.matter.add.fromVertices(x, y, initialVertices, { 
+      isStatic: true,
+      restitution: 0.95,
+      friction: 0.001,
+      frictionStatic: 0.001
+    });
+    
+    // Draw initial rectangle
+    this.drawPolygon(initialVertices);
+  }
+
+  private updatePolygonPlatform(message: PolygonMessage): void {
+    if (!this.platform) return;
+
+    // Update graphics position and rotation
+    this.platform.setPosition(message.position.x, message.position.y);
+    this.platform.setRotation(message.rotation);
+    
+    // Remove old physics body
+    if (this.platformBody) {
+      this.matter.world.remove(this.platformBody);
+    }
+    
+    // Create new physics body with updated vertices
+    this.platformBody = this.matter.add.fromVertices(
+      message.position.x, 
+      message.position.y, 
+      message.vertices, 
+      { 
+        isStatic: true,
+        restitution: 0.95,
+        friction: 0.001,
+        frictionStatic: 0.001
+      }
+    );
+    
+    // Set rotation on the physics body
+    this.matter.body.setAngle(this.platformBody, message.rotation);
+    
+    // Clear and redraw the polygon with new vertices
+    this.platform.clear();
+    this.drawPolygon(message.vertices);
+  }
+  
+  private drawPolygon(vertices: { x: number; y: number }[]): void {
+    if (!this.platform || vertices.length < 3) return;
+    
+    // Set fill color and line style
+    this.platform.fillStyle(0x00ff00, 0.8); // Green with transparency
+    this.platform.lineStyle(2, 0x00aa00, 1); // Darker green border
+    
+    // Start drawing the polygon
+    this.platform.beginPath();
+    this.platform.moveTo(vertices[0].x, vertices[0].y);
+    
+    // Draw lines to each vertex
+    for (let i = 1; i < vertices.length; i++) {
+      this.platform.lineTo(vertices[i].x, vertices[i].y);
+    }
+    
+    // Close the polygon
+    this.platform.closePath();
+    this.platform.fillPath();
+    this.platform.strokePath();
+  }
+
   private createBall(x: number, y: number): Phaser.Physics.Matter.Image {
     // Choose random colored ball
     const ballColorIndex = Phaser.Math.Between(0, 5);
@@ -177,11 +255,11 @@ export class MainScene extends Phaser.Scene {
 
   private initializeWebSocketConnection(): void {
     try {
-      console.log("Connecting to rectangle generator WebSocket...");
+      console.log("Connecting to polygon generator WebSocket...");
       this.ws = new WebSocket("ws://localhost:8765");
       
       this.ws.onopen = () => {
-        console.log("Connected to rectangle generator");
+        console.log("Connected to polygon generator");
         this.connectionRetryTimer = 0; // Reset retry timer
         this.connectionStartTime = this.time.now;
         this.updateStatusDisplay();
@@ -189,11 +267,11 @@ export class MainScene extends Phaser.Scene {
       
       this.ws.onmessage = (event) => {
         try {
-          const message: RectangleMessage = JSON.parse(event.data);
+          const message: PolygonMessage = JSON.parse(event.data);
           this.latestMessage = message; // Store latest message directly
           this.messageCount++; // Count received messages
         } catch (error) {
-          console.error("Failed to parse rectangle message:", error);
+          console.error("Failed to parse polygon message:", error);
         }
       };
       
@@ -219,8 +297,8 @@ export class MainScene extends Phaser.Scene {
 
   private updatePlatformFromWebSocket(): void {
     if (this.latestMessage) {
-      // Use latest position directly
-      this.platform.setPosition(this.latestMessage.position.x, this.latestMessage.position.y);
+      // Update polygon platform with full message data
+      this.updatePolygonPlatform(this.latestMessage);
     }
   }
 

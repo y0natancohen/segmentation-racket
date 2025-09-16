@@ -18,7 +18,7 @@ from unittest.mock import patch
 # Add the current directory to the path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from rectangle_generator import RectangleGenerator
+from rectangle_generator import PolygonGenerator
 
 
 class TestWebSocketIntegration(unittest.IsolatedAsyncioTestCase):
@@ -29,7 +29,7 @@ class TestWebSocketIntegration(unittest.IsolatedAsyncioTestCase):
         # Use a random port for each test to avoid conflicts
         import random
         port = random.randint(9000, 9999)
-        self.generator = RectangleGenerator(host="localhost", port=port, fps=60)
+        self.generator = PolygonGenerator(host="localhost", port=port, fps=60)
         self.received_messages = []
         self.client_connected = False
     
@@ -51,11 +51,9 @@ class TestWebSocketIntegration(unittest.IsolatedAsyncioTestCase):
                 data = json.loads(message)
                 
                 # Verify message format
-                self.assertIn('timestamp', data)
                 self.assertIn('position', data)
-                self.assertIn('velocity', data)
-                self.assertIn('phase', data)
-                self.assertIn('elapsed_time', data)
+                self.assertIn('vertices', data)
+                self.assertIn('rotation', data)
                 
         except asyncio.TimeoutError:
             self.fail("No message received within timeout")
@@ -115,7 +113,7 @@ class TestWebSocketIntegration(unittest.IsolatedAsyncioTestCase):
                     data = json.loads(message)
                     
                     # Verify all required fields are present
-                    required_fields = ['timestamp', 'position', 'velocity', 'phase', 'elapsed_time']
+                    required_fields = ['position', 'vertices', 'rotation']
                     for field in required_fields:
                         self.assertIn(field, data)
                     
@@ -123,18 +121,16 @@ class TestWebSocketIntegration(unittest.IsolatedAsyncioTestCase):
                     self.assertIn('x', data['position'])
                     self.assertIn('y', data['position'])
                     
-                    # Verify velocity structure
-                    self.assertIn('x', data['velocity'])
-                    self.assertIn('y', data['velocity'])
+                    # Verify vertices structure
+                    self.assertIsInstance(data['vertices'], list)
+                    for vertex in data['vertices']:
+                        self.assertIn('x', vertex)
+                        self.assertIn('y', vertex)
                     
                     # Verify data types
-                    self.assertIsInstance(data['timestamp'], (int, float))
+                    self.assertIsInstance(data['rotation'], (int, float))
                     self.assertIsInstance(data['position']['x'], (int, float))
                     self.assertIsInstance(data['position']['y'], (int, float))
-                    self.assertIsInstance(data['velocity']['x'], (int, float))
-                    self.assertIsInstance(data['velocity']['y'], (int, float))
-                    self.assertIsInstance(data['phase'], (int, float))
-                    self.assertIsInstance(data['elapsed_time'], (int, float))
                     
         finally:
             self.generator.running = False
@@ -164,7 +160,9 @@ class TestWebSocketIntegration(unittest.IsolatedAsyncioTestCase):
             for i, websocket in enumerate(clients):
                 message = await asyncio.wait_for(websocket.recv(), timeout=1.0)
                 data = json.loads(message)
-                self.assertIn('timestamp', data)
+                self.assertIn('position', data)
+                self.assertIn('vertices', data)
+                self.assertIn('rotation', data)
             
             # Close all clients
             for websocket in clients:
@@ -190,7 +188,7 @@ class TestRectangleMovementIntegration(unittest.TestCase):
     
     def setUp(self):
         """Set up test fixtures."""
-        self.generator = RectangleGenerator(fps=60)
+        self.generator = PolygonGenerator(fps=60)
     
     def test_movement_consistency_over_time(self):
         """Test that movement is consistent over time."""
@@ -201,20 +199,20 @@ class TestRectangleMovementIntegration(unittest.TestCase):
         messages = []
         for i in range(120):  # 2 seconds at 60 FPS
             test_time = start_time + i * 0.016
-            message = self.generator.calculate_rectangle_position(test_time)
+            message = self.generator.calculate_polygon_data(test_time)
             messages.append(message)
         
-        # Verify timestamps are increasing
+        # Verify rotation is increasing
         for i in range(1, len(messages)):
-            self.assertGreater(messages[i]['timestamp'], messages[i-1]['timestamp'])
+            self.assertGreater(messages[i]['rotation'], messages[i-1]['rotation'])
         
-        # Verify elapsed_time is increasing
-        for i in range(1, len(messages)):
-            self.assertGreater(messages[i]['elapsed_time'], messages[i-1]['elapsed_time'])
+        # Verify position changes over time
+        y_positions = [msg['position']['y'] for msg in messages]
+        self.assertNotEqual(y_positions[0], y_positions[-1])  # Should move over time
         
-        # Verify phase is increasing
-        for i in range(1, len(messages)):
-            self.assertGreater(messages[i]['phase'], messages[i-1]['phase'])
+        # Verify vertices are consistent
+        vertex_counts = [len(msg['vertices']) for msg in messages]
+        self.assertTrue(all(count == vertex_counts[0] for count in vertex_counts))
     
     def test_movement_range_validation(self):
         """Test that the rectangle stays within expected bounds."""
@@ -227,7 +225,7 @@ class TestRectangleMovementIntegration(unittest.TestCase):
         # Test over multiple cycles
         for i in range(240):  # 4 seconds at 60 FPS
             test_time = start_time + i * 0.016
-            message = self.generator.calculate_rectangle_position(test_time)
+            message = self.generator.calculate_polygon_data(test_time)
             y = message['position']['y']
             min_y = min(min_y, y)
             max_y = max(max_y, y)
@@ -251,7 +249,7 @@ class TestRectangleMovementIntegration(unittest.TestCase):
         
         for i in range(240):  # 4 seconds at 60 FPS
             test_time = start_time + i * 0.016
-            message = self.generator.calculate_rectangle_position(test_time)
+            message = self.generator.calculate_polygon_data(test_time)
             y = message['position']['y']
             
             if increasing and y < last_y:
@@ -274,7 +272,7 @@ class TestPerformanceIntegration(unittest.TestCase):
     
     def test_message_generation_performance(self):
         """Test that message generation is fast enough for real-time use."""
-        generator = RectangleGenerator(fps=60)
+        generator = PolygonGenerator(fps=60)
         start_time = time.time()
         generator.start_time = start_time
         
@@ -282,7 +280,7 @@ class TestPerformanceIntegration(unittest.TestCase):
         start_perf = time.time()
         for i in range(1000):
             test_time = start_time + i * 0.016
-            message = generator.calculate_rectangle_position(test_time)
+            message = generator.calculate_polygon_data(test_time)
         end_perf = time.time()
         
         duration = end_perf - start_perf
@@ -296,7 +294,7 @@ class TestPerformanceIntegration(unittest.TestCase):
     
     def test_json_serialization_performance(self):
         """Test that JSON serialization is fast enough."""
-        generator = RectangleGenerator(fps=60)
+        generator = PolygonGenerator(fps=60)
         start_time = time.time()
         generator.start_time = start_time
         
@@ -304,7 +302,7 @@ class TestPerformanceIntegration(unittest.TestCase):
         start_perf = time.time()
         for i in range(1000):
             test_time = start_time + i * 0.016
-            message = generator.calculate_rectangle_position(test_time)
+            message = generator.calculate_polygon_data(test_time)
             json_string = json.dumps(message)
         end_perf = time.time()
         
@@ -324,13 +322,13 @@ class TestErrorHandlingIntegration(unittest.IsolatedAsyncioTestCase):
     async def test_server_startup_with_port_in_use(self):
         """Test that the server handles port conflicts gracefully."""
         # Start first server
-        generator1 = RectangleGenerator(host="localhost", port=8769, fps=60)
+        generator1 = PolygonGenerator(host="localhost", port=8769, fps=60)
         server1_task = asyncio.create_task(generator1.start_server())
         await asyncio.sleep(0.1)
         
         try:
             # Try to start second server on same port
-            generator2 = RectangleGenerator(host="localhost", port=8769, fps=60)
+            generator2 = PolygonGenerator(host="localhost", port=8769, fps=60)
             
             with self.assertRaises(OSError):
                 await generator2.start_server()
@@ -346,7 +344,7 @@ class TestErrorHandlingIntegration(unittest.IsolatedAsyncioTestCase):
     
     async def test_client_disconnection_handling(self):
         """Test that the server handles client disconnections gracefully."""
-        generator = RectangleGenerator(host="localhost", port=8770, fps=60)
+        generator = PolygonGenerator(host="localhost", port=8770, fps=60)
         server_task = asyncio.create_task(generator.start_server())
         await asyncio.sleep(0.1)
         

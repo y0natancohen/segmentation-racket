@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Unit tests for the Rectangle Generator Process
-Tests the core functionality of the rectangle movement generation and WebSocket communication.
+Unit tests for the Polygon Generator Process
+Tests the core functionality of the polygon movement generation and WebSocket communication.
 """
 
 import unittest
@@ -16,15 +16,15 @@ import os
 # Add the current directory to the path so we can import rectangle_generator
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from rectangle_generator import RectangleGenerator
+from rectangle_generator import PolygonGenerator
 
 
-class TestRectangleGenerator(unittest.TestCase):
-    """Test cases for the RectangleGenerator class."""
+class TestPolygonGenerator(unittest.TestCase):
+    """Test cases for the PolygonGenerator class."""
     
     def setUp(self):
         """Set up test fixtures before each test method."""
-        self.generator = RectangleGenerator(host="localhost", port=8766, fps=60)  # Use different port for testing
+        self.generator = PolygonGenerator(host="localhost", port=8766, fps=60)  # Use different port for testing
     
     def test_initialization(self):
         """Test that the generator initializes with correct parameters."""
@@ -39,31 +39,28 @@ class TestRectangleGenerator(unittest.TestCase):
         self.assertEqual(self.generator.center_y, 330)  # 55% of 600
         self.assertEqual(self.generator.frequency, 0.5)
     
-    def test_calculate_rectangle_position(self):
-        """Test rectangle position calculation with sine wave movement."""
+    def test_calculate_polygon_data(self):
+        """Test polygon data calculation with sine wave movement."""
         # Test at start time (should be at center_y)
         start_time = time.time()
         self.generator.start_time = start_time
         
-        position_data = self.generator.calculate_rectangle_position(start_time)
+        polygon_data = self.generator.calculate_polygon_data(start_time)
         
-        self.assertIn('timestamp', position_data)
-        self.assertIn('position', position_data)
-        self.assertIn('velocity', position_data)
-        self.assertIn('phase', position_data)
-        self.assertIn('elapsed_time', position_data)
+        self.assertIn('position', polygon_data)
+        self.assertIn('vertices', polygon_data)
+        self.assertIn('rotation', polygon_data)
         
-        # At start time, elapsed_time should be 0
-        self.assertEqual(position_data['elapsed_time'], 0)
-        self.assertEqual(position_data['phase'], 0)
+        # At start time, rotation should be 0
+        self.assertEqual(polygon_data['rotation'], 0)
         
         # Position should be at center_y (330) at start
-        self.assertEqual(position_data['position']['x'], 300)  # size/2
-        self.assertEqual(position_data['position']['y'], 330)  # center_y
+        self.assertEqual(polygon_data['position']['x'], 300)  # size/2
+        self.assertEqual(polygon_data['position']['y'], 330)  # center_y
         
-        # Velocity should be maximum at start (sine wave derivative at 0)
-        self.assertEqual(position_data['velocity']['x'], 0)
-        self.assertAlmostEqual(position_data['velocity']['y'], 90 * 0.5 * 2 * math.pi, places=5)
+        # Should have vertices from the config
+        self.assertIsInstance(polygon_data['vertices'], list)
+        self.assertGreater(len(polygon_data['vertices']), 0)
     
     def test_sine_wave_movement(self):
         """Test that the movement follows a proper sine wave pattern."""
@@ -80,61 +77,68 @@ class TestRectangleGenerator(unittest.TestCase):
         
         for elapsed, expected_phase in test_times:
             test_time = start_time + elapsed
-            position_data = self.generator.calculate_rectangle_position(test_time)
-            
-            # Check phase calculation
-            self.assertAlmostEqual(position_data['phase'], expected_phase, places=5)
+            polygon_data = self.generator.calculate_polygon_data(test_time)
             
             # Check position calculation
             expected_y = self.generator.center_y + self.generator.amplitude * math.sin(expected_phase)
-            self.assertAlmostEqual(position_data['position']['y'], expected_y, places=5)
+            self.assertAlmostEqual(polygon_data['position']['y'], expected_y, places=5)
+            
+            # Check rotation is increasing
+            expected_rotation = elapsed * 0.5  # 0.5 radians per second
+            self.assertAlmostEqual(polygon_data['rotation'], expected_rotation, places=5)
     
-    def test_velocity_calculation(self):
-        """Test that velocity is correctly calculated as the derivative of position."""
+    def test_polygon_vertices(self):
+        """Test that polygon vertices are correctly transformed."""
         start_time = time.time()
         self.generator.start_time = start_time
         
-        # Test velocity at different points
-        test_times = [0, 0.25, 0.5, 0.75, 1.0]
+        # Test vertices at different rotation angles
+        test_times = [0, 1, 2, 3]
         
         for elapsed in test_times:
             test_time = start_time + elapsed
-            position_data = self.generator.calculate_rectangle_position(test_time)
+            polygon_data = self.generator.calculate_polygon_data(test_time)
             
-            # Velocity should be the derivative of the sine wave
-            phase = elapsed * self.generator.frequency * 2 * math.pi
-            expected_velocity = self.generator.amplitude * self.generator.frequency * 2 * math.pi * math.cos(phase)
+            # Should have vertices from config
+            self.assertIsInstance(polygon_data['vertices'], list)
+            self.assertGreater(len(polygon_data['vertices']), 0)
             
-            self.assertAlmostEqual(position_data['velocity']['y'], expected_velocity, places=5)
-            self.assertEqual(position_data['velocity']['x'], 0)  # X velocity should always be 0
+            # Each vertex should have x and y coordinates
+            for vertex in polygon_data['vertices']:
+                self.assertIn('x', vertex)
+                self.assertIn('y', vertex)
+                self.assertIsInstance(vertex['x'], (int, float))
+                self.assertIsInstance(vertex['y'], (int, float))
     
     def test_message_format(self):
         """Test that the message format is correct and serializable."""
         start_time = time.time()
         self.generator.start_time = start_time
         
-        position_data = self.generator.calculate_rectangle_position(start_time)
+        polygon_data = self.generator.calculate_polygon_data(start_time)
         
         # Test that the data can be serialized to JSON
-        json_string = json.dumps(position_data)
+        json_string = json.dumps(polygon_data)
         self.assertIsInstance(json_string, str)
         
         # Test that it can be deserialized back
         deserialized_data = json.loads(json_string)
-        self.assertEqual(deserialized_data, position_data)
+        self.assertEqual(deserialized_data, polygon_data)
         
         # Test required fields
-        required_fields = ['timestamp', 'position', 'velocity', 'phase', 'elapsed_time']
+        required_fields = ['position', 'vertices', 'rotation']
         for field in required_fields:
-            self.assertIn(field, position_data)
+            self.assertIn(field, polygon_data)
         
         # Test position structure
-        self.assertIn('x', position_data['position'])
-        self.assertIn('y', position_data['position'])
+        self.assertIn('x', polygon_data['position'])
+        self.assertIn('y', polygon_data['position'])
         
-        # Test velocity structure
-        self.assertIn('x', position_data['velocity'])
-        self.assertIn('y', position_data['velocity'])
+        # Test vertices structure
+        self.assertIsInstance(polygon_data['vertices'], list)
+        for vertex in polygon_data['vertices']:
+            self.assertIn('x', vertex)
+            self.assertIn('y', vertex)
     
     def test_fps_calculation(self):
         """Test that FPS is correctly calculated."""
@@ -142,15 +146,28 @@ class TestRectangleGenerator(unittest.TestCase):
         test_fps_values = [20, 30, 60, 120]
         
         for fps in test_fps_values:
-            gen = RectangleGenerator(fps=fps)
+            gen = PolygonGenerator(fps=fps)
             expected_frame_duration = 1.0 / fps
             self.assertEqual(gen.frame_duration, expected_frame_duration)
+    
+    def test_polygon_config_loading(self):
+        """Test that polygon configuration is loaded correctly."""
+        # Test with default config
+        gen = PolygonGenerator()
+        self.assertIn('name', gen.config)
+        self.assertIn('vertices', gen.config)
+        self.assertIn('center_offset', gen.config)
+        self.assertIn('scale', gen.config)
+        
+        # Should have vertices
+        self.assertIsInstance(gen.config['vertices'], list)
+        self.assertGreater(len(gen.config['vertices']), 0)
     
     def test_movement_parameters(self):
         """Test that movement parameters are correctly set."""
         # Test with different size values
         test_size = 800
-        gen = RectangleGenerator()
+        gen = PolygonGenerator()
         
         # Update size and recalculate parameters
         gen.size = test_size
@@ -166,12 +183,12 @@ class TestRectangleGenerator(unittest.TestCase):
         self.assertEqual(gen.center_y, expected_center_y)
 
 
-class TestRectangleGeneratorAsync(unittest.IsolatedAsyncioTestCase):
-    """Async test cases for the RectangleGenerator class."""
+class TestPolygonGeneratorAsync(unittest.IsolatedAsyncioTestCase):
+    """Async test cases for the PolygonGenerator class."""
     
     async def asyncSetUp(self):
         """Set up async test fixtures."""
-        self.generator = RectangleGenerator(host="localhost", port=8767, fps=60)  # Use different port
+        self.generator = PolygonGenerator(host="localhost", port=8767, fps=60)  # Use different port
     
     async def test_websocket_server_startup(self):
         """Test that the WebSocket server can start up."""
@@ -211,7 +228,7 @@ class TestRectangleGeneratorAsync(unittest.IsolatedAsyncioTestCase):
         
         # Start client registration in background
         registration_task = asyncio.create_task(
-            self.generator.register_client(mock_websocket, "/")
+            self.generator.register_client(mock_websocket)
         )
         
         # Give it a moment to register
@@ -263,8 +280,9 @@ class TestRectangleGeneratorAsync(unittest.IsolatedAsyncioTestCase):
         for call in mock_client1.send.call_args_list:
             message = call[0][0]  # First argument
             data = json.loads(message)
-            self.assertIn('timestamp', data)
             self.assertIn('position', data)
+            self.assertIn('vertices', data)
+            self.assertIn('rotation', data)
     
     async def test_performance_monitoring(self):
         """Test that performance monitoring works correctly."""
@@ -296,12 +314,12 @@ class TestRectangleGeneratorAsync(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(self.generator.frame_count, 0)
 
 
-class TestRectangleGeneratorIntegration(unittest.TestCase):
-    """Integration tests for the RectangleGenerator."""
+class TestPolygonGeneratorIntegration(unittest.TestCase):
+    """Integration tests for the PolygonGenerator."""
     
     def test_message_consistency(self):
         """Test that messages are consistent over time."""
-        generator = RectangleGenerator(fps=60)
+        generator = PolygonGenerator(fps=60)
         start_time = time.time()
         generator.start_time = start_time
         
@@ -309,24 +327,24 @@ class TestRectangleGeneratorIntegration(unittest.TestCase):
         messages = []
         for i in range(10):
             test_time = start_time + i * 0.016  # 60 FPS intervals
-            message = generator.calculate_rectangle_position(test_time)
+            message = generator.calculate_polygon_data(test_time)
             messages.append(message)
         
-        # Verify that timestamps are increasing
+        # Verify that rotation is increasing
         for i in range(1, len(messages)):
-            self.assertGreater(messages[i]['timestamp'], messages[i-1]['timestamp'])
+            self.assertGreater(messages[i]['rotation'], messages[i-1]['rotation'])
         
-        # Verify that elapsed_time is increasing
-        for i in range(1, len(messages)):
-            self.assertGreater(messages[i]['elapsed_time'], messages[i-1]['elapsed_time'])
+        # Verify that position changes over time
+        y_positions = [msg['position']['y'] for msg in messages]
+        self.assertNotEqual(y_positions[0], y_positions[-1])  # Should move over time
         
-        # Verify that phase is increasing
-        for i in range(1, len(messages)):
-            self.assertGreater(messages[i]['phase'], messages[i-1]['phase'])
+        # Verify that vertices are consistent (same count)
+        vertex_counts = [len(msg['vertices']) for msg in messages]
+        self.assertTrue(all(count == vertex_counts[0] for count in vertex_counts))
     
     def test_movement_range(self):
         """Test that the rectangle stays within expected bounds."""
-        generator = RectangleGenerator()
+        generator = PolygonGenerator()
         start_time = time.time()
         generator.start_time = start_time
         
@@ -336,7 +354,7 @@ class TestRectangleGeneratorIntegration(unittest.TestCase):
         
         for i in range(120):  # 2 seconds at 60 FPS
             test_time = start_time + i * 0.016
-            message = generator.calculate_rectangle_position(test_time)
+            message = generator.calculate_polygon_data(test_time)
             y = message['position']['y']
             min_y = min(min_y, y)
             max_y = max(max_y, y)
@@ -350,7 +368,7 @@ class TestRectangleGeneratorIntegration(unittest.TestCase):
     
     def test_frequency_accuracy(self):
         """Test that the movement frequency is accurate."""
-        generator = RectangleGenerator()
+        generator = PolygonGenerator()
         start_time = time.time()
         generator.start_time = start_time
         
@@ -361,7 +379,7 @@ class TestRectangleGeneratorIntegration(unittest.TestCase):
         
         for i in range(240):  # 4 seconds at 60 FPS
             test_time = start_time + i * 0.016
-            message = generator.calculate_rectangle_position(test_time)
+            message = generator.calculate_polygon_data(test_time)
             y = message['position']['y']
             
             if increasing and y < last_y:

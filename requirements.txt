@@ -1,9 +1,14 @@
-# PyTorch with CUDA 12.1 support
+# Force PyTorch to use CUDA index
 --index-url https://download.pytorch.org/whl/cu121
 torch
 torchvision
 
-# Computer Vision dependencies
+# Switch back to PyPI for other packages
+--index-url https://pypi.org/simple
 opencv-python
 numpy
 pillow
+
+# Python dependencies for polygon generator
+websockets
+asyncio

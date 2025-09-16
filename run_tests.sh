@@ -48,6 +48,16 @@ echo ""
 print_status "Running Python unit tests..."
 cd /home/jonathan/segment_project
 
+# Activate virtual environment
+print_status "Activating virtual environment..."
+if [ -f ".venv/bin/activate" ]; then
+    source .venv/bin/activate
+    print_success "Virtual environment activated"
+else
+    print_error "Virtual environment not found at .venv/bin/activate"
+    exit 1
+fi
+
 if python3 -m pytest test_rectangle_generator.py -v; then
     print_success "Python unit tests passed"
 else
@@ -70,14 +80,14 @@ echo ""
 print_status "Skipping TypeScript unit tests (configuration complexity)"
 print_warning "TypeScript tests require additional setup - focusing on Python tests for now"
 
-# Test 4: Build Test
+# Test 4: TypeScript Compilation Test
 echo ""
-print_status "Testing TypeScript build..."
+print_status "Testing TypeScript compilation..."
 cd /home/jonathan/segment_project/phaser-matter-game
-if npm run build; then
-    print_success "TypeScript build successful"
+if npx tsc --noEmit; then
+    print_success "TypeScript compilation successful"
 else
-    print_error "TypeScript build failed"
+    print_error "TypeScript compilation failed"
     exit 1
 fi
 
@@ -87,14 +97,15 @@ print_status "Running end-to-end integration test..."
 
 # Start Python generator in background
 cd /home/jonathan/segment_project
-python3 rectangle_generator.py &
+# Use the virtual environment Python
+.venv/bin/python3 rectangle_generator.py polygon_config/rectangle.json &
 PYTHON_PID=$!
 
 # Wait for server to start
 sleep 2
 
 # Test WebSocket connection
-if python3 -c "
+if .venv/bin/python3 -c "
 import asyncio
 import websockets
 import json
@@ -107,7 +118,7 @@ async def test_connection():
             data = json.loads(message)
             
             # Verify message format
-            required_fields = ['timestamp', 'position', 'velocity', 'phase', 'elapsed_time']
+            required_fields = ['position', 'vertices', 'rotation']
             for field in required_fields:
                 if field not in data:
                     print(f'Missing field: {field}')
@@ -133,7 +144,7 @@ kill $PYTHON_PID 2>/dev/null || true
 # Test 6: Full Pipeline FPS Test
 echo ""
 print_status "Running full pipeline FPS test..."
-if python3 test_pipeline_fps.py; then
+if .venv/bin/python3 test_pipeline_fps.py; then
     print_success "Full pipeline FPS test passed"
 else
     print_error "Full pipeline FPS test failed"
@@ -144,14 +155,14 @@ fi
 echo ""
 print_status "Running performance tests..."
 
-if python3 -c "
+if .venv/bin/python3 -c "
 import time
 import sys
 sys.path.insert(0, '.')
-from rectangle_generator import RectangleGenerator
+from rectangle_generator import PolygonGenerator
 
 # Test message generation performance
-generator = RectangleGenerator(fps=60)
+generator = PolygonGenerator(fps=60)
 start_time = time.time()
 generator.start_time = start_time
 
@@ -159,7 +170,7 @@ generator.start_time = start_time
 start_perf = time.time()
 for i in range(1000):
     test_time = start_time + i * 0.016
-    message = generator.calculate_rectangle_position(test_time)
+    message = generator.calculate_polygon_data(test_time)
 end_perf = time.time()
 
 duration = end_perf - start_perf

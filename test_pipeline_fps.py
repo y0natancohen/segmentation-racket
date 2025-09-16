@@ -47,7 +47,7 @@ async def test_pipeline_fps(duration_seconds: int = 5):
             # Test FPS
             start_time = time.time()
             message_count = 0
-            last_timestamp = 0
+            last_rotation = 0
             frame_times = []
             
             while time.time() - start_time < duration_seconds:
@@ -55,13 +55,20 @@ async def test_pipeline_fps(duration_seconds: int = 5):
                     message = await asyncio.wait_for(websocket.recv(), timeout=0.1)
                     data = json.loads(message)
                     
-                    # Calculate frame time
-                    current_timestamp = data['timestamp']
-                    if last_timestamp > 0:
-                        frame_time = current_timestamp - last_timestamp
+                    # Verify message format
+                    if 'position' not in data or 'vertices' not in data or 'rotation' not in data:
+                        print("Missing required fields in message")
+                        return False
+                    
+                    # Calculate frame time using rotation (0.5 rad/s = 0.5 rad per second)
+                    current_rotation = data['rotation']
+                    if last_rotation > 0:
+                        rotation_diff = current_rotation - last_rotation
+                        # Convert rotation difference to time (0.5 rad/s)
+                        frame_time = rotation_diff / 0.5
                         frame_times.append(frame_time)
                     
-                    last_timestamp = current_timestamp
+                    last_rotation = current_rotation
                     message_count += 1
                     
                 except asyncio.TimeoutError:

@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """
-Rectangle Generator Process
-Generates rectangle movement data at 60 FPS and sends via WebSocket to main process.
+Polygon Generator Process
+Generates polygon movement data at 60 FPS and sends via WebSocket to main process.
 
 Message Format:
 {
-    "position": {"x": float, "y": float}
+    "position": {"x": float, "y": float},
+    "vertices": [{"x": float, "y": float}, ...],
+    "rotation": float
 }
 """
 
@@ -16,17 +18,21 @@ import time
 import math
 import signal
 import sys
-from typing import Dict, Any
+import os
+from typing import Dict, Any, List
 
-class RectangleGenerator:
-    def __init__(self, host: str = "localhost", port: int = 8765, fps: int = 60):
+class PolygonGenerator:
+    def __init__(self, host: str = "localhost", port: int = 8765, fps: int = 60, config_file: str = "polygon_config/rectangle.json"):
         self.host = host
         self.port = port
         self.fps = fps
         self.frame_duration = 1.0 / fps
         self.running = False
         
-        # Rectangle movement parameters
+        # Load polygon configuration
+        self.config = self.load_polygon_config(config_file)
+        
+        # Movement parameters
         self.size = 600  # Match the game size
         self.amplitude = self.size * 0.15  # Movement range (0.4 to 0.7 of size)
         self.center_y = self.size * 0.55   # Center position
@@ -40,9 +46,34 @@ class RectangleGenerator:
         # Performance monitoring
         self.frame_count = 0
         self.last_stats_time = time.time()
+    
+    def load_polygon_config(self, config_file: str) -> Dict[str, Any]:
+        """Load polygon configuration from JSON file."""
+        try:
+            with open(config_file, 'r') as f:
+                config = json.load(f)
+            print(f"Loaded polygon config: {config['name']} - {config['description']}")
+            return config
+        except FileNotFoundError:
+            print(f"Warning: Config file {config_file} not found, using default rectangle")
+            return {
+                "name": "rectangle",
+                "description": "Default rectangle",
+                "vertices": [
+                    {"x": -50, "y": -25},
+                    {"x": 50, "y": -25},
+                    {"x": 50, "y": 25},
+                    {"x": -50, "y": 25}
+                ],
+                "center_offset": {"x": 0, "y": 0},
+                "scale": 1.0
+            }
+        except json.JSONDecodeError as e:
+            print(f"Error parsing config file {config_file}: {e}")
+            raise
         
-    def calculate_rectangle_position(self, current_time: float) -> Dict[str, Any]:
-        """Calculate rectangle position using sine wave movement."""
+    def calculate_polygon_data(self, current_time: float) -> Dict[str, Any]:
+        """Calculate polygon position and rotation using sine wave movement."""
         elapsed_time = current_time - self.start_time
         
         # Sine wave movement: up and down every 2 seconds
@@ -50,14 +81,38 @@ class RectangleGenerator:
         y_offset = self.amplitude * math.sin(phase)
         y_position = self.center_y + y_offset
         
+        # Rotation: slow rotation over time
+        rotation = elapsed_time * 0.5  # 0.5 radians per second
+        
+        # Transform vertices with rotation and scale
+        transformed_vertices = []
+        for vertex in self.config["vertices"]:
+            # Apply scale
+            scaled_x = vertex["x"] * self.config["scale"]
+            scaled_y = vertex["y"] * self.config["scale"]
+            
+            # Apply rotation
+            cos_r = math.cos(rotation)
+            sin_r = math.sin(rotation)
+            rotated_x = scaled_x * cos_r - scaled_y * sin_r
+            rotated_y = scaled_x * sin_r + scaled_y * cos_r
+            
+            # Apply center offset
+            final_x = rotated_x + self.config["center_offset"]["x"]
+            final_y = rotated_y + self.config["center_offset"]["y"]
+            
+            transformed_vertices.append({"x": final_x, "y": final_y})
+        
         return {
             "position": {
                 "x": self.size / 2,  # Fixed X position
                 "y": y_position
-            }
+            },
+            "vertices": transformed_vertices,
+            "rotation": rotation
         }
     
-    async def register_client(self, websocket, path):
+    async def register_client(self, websocket):
         """Register a new client connection."""
         self.clients.add(websocket)
         print(f"Client connected. Total clients: {len(self.clients)}")
@@ -74,13 +129,13 @@ class RectangleGenerator:
         next_frame_time = time.time()
         
         while self.running:
-            # Calculate current rectangle position
+            # Calculate current polygon data
             current_time = time.time()
-            rectangle_data = self.calculate_rectangle_position(current_time)
+            polygon_data = self.calculate_polygon_data(current_time)
             
             # Send to all connected clients
             if self.clients:
-                message = json.dumps(rectangle_data)
+                message = json.dumps(polygon_data)
                 disconnected_clients = set()
                 
                 for client in self.clients:
@@ -163,8 +218,13 @@ async def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
-    # Create and start rectangle generator
-    generator = RectangleGenerator(fps=60)
+    # Get config file from command line argument or use default
+    config_file = "polygon_config/rectangle.json"
+    if len(sys.argv) > 1:
+        config_file = sys.argv[1]
+    
+    # Create and start polygon generator
+    generator = PolygonGenerator(fps=60, config_file=config_file)
     
     try:
         await generator.start_server()

@@ -1,0 +1,11 @@
+{
+  "name": "triangle",
+  "description": "Equilateral triangle shape",
+  "vertices": [
+    {"x": 0, "y": -43.3},
+    {"x": -37.5, "y": 21.65},
+    {"x": 37.5, "y": 21.65}
+  ],
+  "center_offset": {"x": 0, "y": 0},
+  "scale": 1.0
+}
