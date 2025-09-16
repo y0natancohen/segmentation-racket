@@ -19,10 +19,8 @@ export class MainScene extends Phaser.Scene {
   private connectionRetryTimer: number = 0;
   private connectionRetryDelay: number = 2000; // 2 seconds
   
-  // Smooth movement interpolation
-  private messageBuffer: RectangleMessage[] = [];
-  private maxBufferSize: number = 3;
-  private interpolationDelay: number = 50; // 50ms delay for smooth interpolation
+  // Latest message storage
+  private latestMessage: RectangleMessage | null = null;
   
   // FPS monitoring
   private fpsText!: Phaser.GameObjects.Text;
@@ -204,7 +202,7 @@ export class MainScene extends Phaser.Scene {
       this.ws.onmessage = (event) => {
         try {
           const message: RectangleMessage = JSON.parse(event.data);
-          this.addMessageToBuffer(message);
+          this.latestMessage = message; // Store latest message directly
           this.messageCount++; // Count received messages
         } catch (error) {
           console.error("Failed to parse rectangle message:", error);
@@ -232,12 +230,9 @@ export class MainScene extends Phaser.Scene {
   }
 
   private updatePlatformFromWebSocket(): void {
-    if (this.messageBuffer.length > 0) {
-      // Use interpolated position from message buffer
-      const interpolatedPosition = this.getInterpolatedPosition();
-      if (interpolatedPosition) {
-        this.platform.setPosition(interpolatedPosition.x, interpolatedPosition.y);
-      }
+    if (this.latestMessage) {
+      // Use latest position directly
+      this.platform.setPosition(this.latestMessage.position.x, this.latestMessage.position.y);
     }
   }
 
@@ -251,64 +246,7 @@ export class MainScene extends Phaser.Scene {
     }
   }
 
-  private addMessageToBuffer(message: RectangleMessage): void {
-    // Add message to buffer
-    this.messageBuffer.push(message);
-    
-    // Keep buffer size manageable
-    if (this.messageBuffer.length > this.maxBufferSize) {
-      this.messageBuffer.shift(); // Remove oldest message
-    }
-    
-    // Message added to buffer for interpolation
-  }
 
-  private getInterpolatedPosition(): { x: number; y: number } | null {
-    if (this.messageBuffer.length < 2) {
-      // Not enough data for interpolation, use latest position
-      const latest = this.messageBuffer[this.messageBuffer.length - 1];
-      return latest ? latest.position : null;
-    }
-
-    const currentTime = this.time.now;
-    const targetTime = currentTime - this.interpolationDelay; // Look back 50ms
-    
-    // Find the two messages to interpolate between
-    let beforeMessage: RectangleMessage | null = null;
-    let afterMessage: RectangleMessage | null = null;
-    
-    for (let i = 0; i < this.messageBuffer.length - 1; i++) {
-      const msg1 = this.messageBuffer[i];
-      const msg2 = this.messageBuffer[i + 1];
-      
-      if (msg1.timestamp <= targetTime && msg2.timestamp >= targetTime) {
-        beforeMessage = msg1;
-        afterMessage = msg2;
-        break;
-      }
-    }
-    
-    if (!beforeMessage || !afterMessage) {
-      // No suitable messages found, use latest
-      const latest = this.messageBuffer[this.messageBuffer.length - 1];
-      return latest ? latest.position : null;
-    }
-    
-    // Interpolate between the two messages
-    const timeDiff = afterMessage.timestamp - beforeMessage.timestamp;
-    if (timeDiff <= 0) {
-      return beforeMessage.position;
-    }
-    
-    const interpolationFactor = (targetTime - beforeMessage.timestamp) / timeDiff;
-    const clampedFactor = Math.max(0, Math.min(1, interpolationFactor));
-    
-    // Linear interpolation
-    const x = beforeMessage.position.x + (afterMessage.position.x - beforeMessage.position.x) * clampedFactor;
-    const y = beforeMessage.position.y + (afterMessage.position.y - beforeMessage.position.y) * clampedFactor;
-    
-    return { x, y };
-  }
 
   private updateFpsDisplay(): void {
     const currentTime = this.time.now;
@@ -330,8 +268,8 @@ export class MainScene extends Phaser.Scene {
   private updateStatusDisplay(): void {
     if (this.ws) {
       const connectionDuration = Math.floor((this.time.now - this.connectionStartTime) / 1000);
-      const bufferSize = this.messageBuffer.length;
-      this.statusText.setText(`Status: Connected (${connectionDuration}s) | Buffer: ${bufferSize}`);
+      const hasData = this.latestMessage ? 'Yes' : 'No';
+      this.statusText.setText(`Status: Connected (${connectionDuration}s) | Data: ${hasData}`);
       this.statusText.setStyle({ color: '#000000', backgroundColor: '#00ff00' });
     } else {
       this.statusText.setText("Status: Disconnected");
