@@ -13,7 +13,6 @@ export class MainScene extends Phaser.Scene {
   // @ts-ignore - Used for timer callback side effects
   private ballSpawnTimer!: Phaser.Time.TimerEvent;
   private platform!: Phaser.Physics.Matter.Image;
-  private platformStartTime: number = 0;
   
   // WebSocket connection for rectangle data
   private ws: WebSocket | null = null;
@@ -110,9 +109,6 @@ export class MainScene extends Phaser.Scene {
     this.platform.setBounce(0.95);
     this.platform.setFriction(0.001);
     this.platform.setFrictionStatic(0.001);
-    
-    // Record start time for movement calculation
-    this.platformStartTime = this.time.now;
 
     // Initialize WebSocket connection to rectangle generator
     this.initializeWebSocketConnection();
@@ -192,27 +188,6 @@ export class MainScene extends Phaser.Scene {
     return ball;
   }
 
-  private updatePlatformMovement(): void {
-    const size = 600;
-    const topY = size * 0.4;    // Higher position
-    const bottomY = size * 0.7; // Lower position (original position)
-    
-    // Calculate time elapsed since start
-    const elapsed = this.time.now - this.platformStartTime;
-    
-    // Create a 2-second cycle (1 second up, 1 second down)
-    const cycleTime = 2000;
-    const cycleProgress = (elapsed % cycleTime) / cycleTime;
-    
-    // Use sine wave for smooth up-down movement
-    const sineValue = Math.sin(cycleProgress * Math.PI * 2);
-    
-    // Map sine wave (-1 to 1) to our Y range
-    const newY = bottomY + (sineValue * (bottomY - topY));
-    
-    // Update platform position
-    this.platform.setPosition(this.platform.x, newY);
-  }
 
   private initializeWebSocketConnection(): void {
     try {
@@ -262,12 +237,8 @@ export class MainScene extends Phaser.Scene {
       const interpolatedPosition = this.getInterpolatedPosition();
       if (interpolatedPosition) {
         this.platform.setPosition(interpolatedPosition.x, interpolatedPosition.y);
-        return;
       }
     }
-    
-    // Fallback to local calculation if no WebSocket data
-    this.updatePlatformMovement();
   }
 
   private handleConnectionRetry(): void {
