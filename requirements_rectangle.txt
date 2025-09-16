@@ -1,0 +1,3 @@
+# Python dependencies for rectangle generator
+websockets>=11.0.3
+asyncio
