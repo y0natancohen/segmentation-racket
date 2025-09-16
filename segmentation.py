@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import argparse
+from collections import deque
 
 import cv2
 import torch
@@ -10,6 +11,49 @@ from PIL import Image
 
 sys.path.append('rvm')
 from model import MattingNetwork
+
+
+class TimingStats:
+    """Track timing statistics for different processing steps"""
+    def __init__(self, max_samples=100):
+        self.max_samples = max_samples
+        self.timings = {
+            'camera_capture': deque(maxlen=max_samples),
+            'data_prep': deque(maxlen=max_samples),
+            'model_inference': deque(maxlen=max_samples),
+            'thresholding': deque(maxlen=max_samples),
+            'find_contour': deque(maxlen=max_samples),
+            'generate_polygon': deque(maxlen=max_samples),
+            'build_display': deque(maxlen=max_samples),
+            'save_operations': deque(maxlen=max_samples),
+            'web_display_update': deque(maxlen=max_samples),
+            'fps_calculation': deque(maxlen=max_samples),
+            'total_frame': deque(maxlen=max_samples)
+        }
+    
+    def add_timing(self, step_name, duration_ms):
+        """Add a timing measurement for a specific step"""
+        if step_name in self.timings:
+            self.timings[step_name].append(duration_ms)
+    
+    def get_average_timings(self):
+        """Get average timing for each step in milliseconds"""
+        averages = {}
+        for step, times in self.timings.items():
+            if times:
+                averages[step] = sum(times) / len(times)
+            else:
+                averages[step] = 0.0
+        return averages
+    
+    def get_stats_summary(self):
+        """Get formatted timing statistics summary"""
+        averages = self.get_average_timings()
+        summary = []
+        for step, avg_time in averages.items():
+            if step != 'total_frame':  # Don't include total in individual steps
+                summary.append(f"{step.replace('_', ' ').title()}: {avg_time:.1f}ms")
+        return summary
 
 
 def parse_args():
@@ -142,6 +186,53 @@ def setup_web_display(port):
                                 <div class="info-value" id="fp16">False</div>
                             </div>
                         </div>
+                        <h2>Timing Statistics (ms)</h2>
+                        <div class="info-grid">
+                            <div class="info-card">
+                                <div class="info-label">Camera Capture</div>
+                                <div class="info-value" id="timing-camera_capture">0.0</div>
+                            </div>
+                            <div class="info-card">
+                                <div class="info-label">Data Prep</div>
+                                <div class="info-value" id="timing-data_prep">0.0</div>
+                            </div>
+                            <div class="info-card">
+                                <div class="info-label">Model Inference</div>
+                                <div class="info-value" id="timing-model_inference">0.0</div>
+                            </div>
+                            <div class="info-card">
+                                <div class="info-label">Thresholding</div>
+                                <div class="info-value" id="timing-thresholding">0.0</div>
+                            </div>
+                            <div class="info-card">
+                                <div class="info-label">Find Contour</div>
+                                <div class="info-value" id="timing-find_contour">0.0</div>
+                            </div>
+                            <div class="info-card">
+                                <div class="info-label">Generate Polygon</div>
+                                <div class="info-value" id="timing-generate_polygon">0.0</div>
+                            </div>
+                            <div class="info-card">
+                                <div class="info-label">Build Display</div>
+                                <div class="info-value" id="timing-build_display">0.0</div>
+                            </div>
+                            <div class="info-card">
+                                <div class="info-label">Save Operations</div>
+                                <div class="info-value" id="timing-save_operations">0.0</div>
+                            </div>
+                            <div class="info-card">
+                                <div class="info-label">Web Display</div>
+                                <div class="info-value" id="timing-web_display_update">0.0</div>
+                            </div>
+                            <div class="info-card">
+                                <div class="info-label">FPS Calculation</div>
+                                <div class="info-value" id="timing-fps_calculation">0.0</div>
+                            </div>
+                            <div class="info-card">
+                                <div class="info-label">Total Frame</div>
+                                <div class="info-value" id="timing-total_frame">0.0</div>
+                            </div>
+                        </div>
                         <div class="frame">
                             <img id="frame" src="/frame" alt="Live Feed">
                         </div>
@@ -158,6 +249,16 @@ def setup_web_display(port):
                                     document.getElementById('method').textContent = data.method;
                                     document.getElementById('dsr').textContent = data.dsr;
                                     document.getElementById('fp16').textContent = data.fp16 ? 'True' : 'False';
+                                    
+                                    // Update timing statistics
+                                    if (data.timing) {
+                                        for (const [key, value] of Object.entries(data.timing)) {
+                                            const element = document.getElementById('timing-' + key);
+                                            if (element) {
+                                                element.textContent = value.toFixed(1);
+                                            }
+                                        }
+                                    }
                                 })
                                 .catch(err => console.log('Info update failed:', err));
                         }
@@ -296,8 +397,12 @@ def setup_signal_handlers(web_server, cap):
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-def process_frame(frame, model, dev, args, bg_img, rec):
+def process_frame(frame, model, dev, args, bg_img, rec, timing_stats=None):
     """Process a single frame with RVM model"""
+    frame_start = time.time()
+    
+    # Data preparation timing
+    prep_start = time.time()
     H, W = frame.shape[:2]
     
     # Prepare background
@@ -314,7 +419,12 @@ def process_frame(frame, model, dev, args, bg_img, rec):
     # Use RVM model
     src = to_torch_image(frame, dev, args.fp16)
     bgT = to_torch_bg(bg, dev, args.fp16)
+    prep_time = (time.time() - prep_start) * 1000
+    if timing_stats:
+        timing_stats.add_timing('data_prep', prep_time)
 
+    # Model inference timing
+    inference_start = time.time()
     fgr, pha, rec[0], rec[1], rec[2], rec[3] = model(src, rec[0], rec[1], rec[2], rec[3], args.dsr)
     com = fgr * pha + bgT.unsqueeze(0) * (1 - pha)  # from RVM README
     com = (com.clamp(0,1)[0].permute(1,2,0).cpu().numpy()*255).astype(np.uint8)
@@ -323,6 +433,9 @@ def process_frame(frame, model, dev, args, bg_img, rec):
     # Extract segmentation map (alpha channel)
     seg_map = (pha[0,0].cpu().numpy()*255).astype(np.uint8)
     seg_map_bgr = cv2.cvtColor(seg_map, cv2.COLOR_GRAY2BGR)
+    inference_time = (time.time() - inference_start) * 1000
+    if timing_stats:
+        timing_stats.add_timing('model_inference', inference_time)
     
     # Generate polygon from segmentation map
     polygon = None
@@ -337,20 +450,27 @@ def process_frame(frame, model, dev, args, bg_img, rec):
                 min_area=args.polygon_min_area,
                 epsilon_ratio=args.polygon_epsilon,
                 return_mask=True,
-                use_skimage=True,
+                timing_stats=timing_stats
             )
         else:
             polygon = matte_to_polygon(
                 pha_float, 
                 threshold=args.polygon_threshold,
                 min_area=args.polygon_min_area,
-                epsilon_ratio=args.polygon_epsilon
+                epsilon_ratio=args.polygon_epsilon,
+                timing_stats=timing_stats
             )
+
+    total_time = (time.time() - frame_start) * 1000
+    if timing_stats:
+        timing_stats.add_timing('total_frame', total_time)
 
     return com_bgr, seg_map_bgr, polygon, thresholded_mask, rec
 
-def build_view(frame, com_bgr, seg_map_bgr, thresholded_mask, args):
+def build_view(frame, com_bgr, seg_map_bgr, thresholded_mask, args, timing_stats=None):
     """Build the display view with different components"""
+    build_start = time.time()
+    
     view_components = [frame, com_bgr, seg_map_bgr]
     
     # Add thresholded mask if requested
@@ -363,10 +483,16 @@ def build_view(frame, com_bgr, seg_map_bgr, thresholded_mask, args):
     else:
         view = com_bgr
     
+    build_time = (time.time() - build_start) * 1000
+    if timing_stats:
+        timing_stats.add_timing('build_display', build_time)
+    
     return view
 
-def save_frame_data(frame, com_bgr, seg_map, polygon, args, frame_count):
+def save_frame_data(frame, com_bgr, seg_map, polygon, args, frame_count, timing_stats=None):
     """Save frame data if requested"""
+    save_start = time.time()
+    
     if args.save_images:
         cv2.imwrite(os.path.join(args.output_dir, "images", f"frame_{frame_count:06d}.jpg"), frame)
     
@@ -380,24 +506,39 @@ def save_frame_data(frame, com_bgr, seg_map, polygon, args, frame_count):
         # Save image with polygon overlay
         polygon_image = draw_polygon_on_image(frame, polygon, color=(0, 255, 0), thickness=2)
         cv2.imwrite(os.path.join(args.output_dir, "polygon", f"poly_{frame_count:06d}.jpg"), polygon_image)
+    
+    save_time = (time.time() - save_start) * 1000
+    if timing_stats:
+        timing_stats.add_timing('save_operations', save_time)
 
-def update_web_display(view, latest_frame_data):
+def update_web_display(view, latest_frame_data, timing_stats=None):
     """Update web display with current frame"""
+    web_start = time.time()
+    
     if latest_frame_data is not None:
         _, buffer = cv2.imencode('.jpg', view)
         latest_frame_data[0] = buffer.tobytes()
+    
+    web_time = (time.time() - web_start) * 1000
+    if timing_stats:
+        timing_stats.add_timing('web_display_update', web_time)
 
-def update_status_display(view, fps, args, polygon, system_info):
+def update_status_display(view, fps, args, polygon, system_info, timing_stats=None):
     """Update status display with FPS and polygon info"""
     status_text = f"FPS:{fps:5.1f} Method:RVM dsr={args.dsr} fp16={args.fp16}"
     
     # Update system info for web display
     if system_info is not None:
+        timing_data = {}
+        if timing_stats:
+            timing_data = timing_stats.get_average_timings()
+        
         system_info[0] = {
             "fps": fps,
             "method": "RVM",
             "dsr": args.dsr,
-            "fp16": args.fp16
+            "fp16": args.fp16,
+            "timing": timing_data
         }
     
     cv2.putText(view, status_text, (12,28),
@@ -446,38 +587,59 @@ def run_segmentation_loop(args, model, dev, cap, bg_img, web_server, latest_fram
     last = time.time()
     fps = 0.0
     frame_count = 0
+    timing_stats = TimingStats()
     
     with torch.inference_mode():
         while True:
+            loop_start = time.time()
+            
+            # Camera capture timing
+            camera_start = time.time()
             ret, frame = cap.read()
             if not ret:
                 break
+            camera_time = (time.time() - camera_start) * 1000
+            timing_stats.add_timing('camera_capture', camera_time)
             
             # Process frame
             com_bgr, seg_map_bgr, polygon, thresholded_mask, rec = process_frame(
-                frame, model, dev, args, bg_img, rec)
+                frame, model, dev, args, bg_img, rec, timing_stats)
             
             # Build view
-            view = build_view(frame, com_bgr, seg_map_bgr, thresholded_mask, args)
+            view = build_view(frame, com_bgr, seg_map_bgr, thresholded_mask, args, timing_stats)
             
-            # Calculate FPS
+            # FPS calculation timing
+            fps_start = time.time()
             now = time.time()
             fps = 0.9 * fps + 0.1 * calculate_fps(last, now)
             last = now
+            fps_time = (time.time() - fps_start) * 1000
+            timing_stats.add_timing('fps_calculation', fps_time)
             
             # Update status display
-            view = update_status_display(view, fps, args, polygon, system_info)
+            view = update_status_display(view, fps, args, polygon, system_info, timing_stats)
             
             # Save frame data if requested
             if args.save_images or args.save_segmentation or args.save_composite or args.save_polygon:
-                save_frame_data(frame, com_bgr, seg_map_bgr[:,:,0], polygon, args, frame_count)
+                save_frame_data(frame, com_bgr, seg_map_bgr[:,:,0], polygon, args, frame_count, timing_stats)
                 frame_count += 1
                 if frame_count % 30 == 0:  # Print progress every 30 frames
                     print(f"Processed {frame_count} frames...")
 
             # Update web display
             if args.web_display:
-                update_web_display(view, latest_frame_data)
+                update_web_display(view, latest_frame_data, timing_stats)
+            
+            # Total frame timing
+            total_time = (time.time() - loop_start) * 1000
+            timing_stats.add_timing('total_frame', total_time)
+            
+            # Debug: Print timing breakdown every 30 frames
+            if frame_count % 30 == 0:
+                averages = timing_stats.get_average_timings()
+                print(f"Timing breakdown: Camera={averages['camera_capture']:.1f}ms, "
+                      f"Processing={averages['data_prep'] + averages['model_inference'] + averages['thresholding'] + averages['find_contour'] + averages['generate_polygon'] + averages['build_display']:.1f}ms, "
+                      f"Total={averages['total_frame']:.1f}ms")
 
 def main():
     """Main function - orchestrates setup, runs segmentation loop, and cleanup"""
@@ -498,22 +660,26 @@ def main():
     cleanup_resources(cap, web_server)
 
 
-def matte_to_polygon(pha, threshold=0.5, min_area=2000, epsilon_ratio=0.015, use_skimage=False, return_mask=False):
+def matte_to_polygon(pha, threshold=0.5, min_area=2000, epsilon_ratio=0.015, return_mask=False, timing_stats=None):
     """
     pha: 2D float32 array in [0,1] (alpha matte)
     threshold: binarization threshold for foreground
     min_area: ignore tiny contours below this many pixels
     epsilon_ratio: Douglas-Peucker epsilon as a fraction of perimeter
-    use_skimage: if True, use skimage.measure.find_contours (subpixel)
     return_mask: if True, return both polygon and thresholded mask
+    timing_stats: TimingStats object to record timing measurements
     Returns: Nx2 float32 array of (x,y) polygon vertices, or None if none found.
              If return_mask=True, returns (polygon, thresholded_mask) tuple.
     """
     H, W = pha.shape[:2]
 
     # 1) Smooth and threshold
+    threshold_start = time.time()
     m = cv2.GaussianBlur(pha, (0,0), 1.2)
     mask = (m >= threshold).astype(np.uint8) * 255
+    threshold_time = (time.time() - threshold_start) * 1000
+    if timing_stats:
+        timing_stats.add_timing('thresholding', threshold_time)
 
     # 2) Morphology to clean noise & holes
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5,5))
@@ -521,37 +687,36 @@ def matte_to_polygon(pha, threshold=0.5, min_area=2000, epsilon_ratio=0.015, use
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k, iterations=2)
 
     # 3) Contour extraction
-    if not use_skimage:
-        cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not cnts: 
-            return (None, mask) if return_mask else None
-        cnt = max(cnts, key=cv2.contourArea)
-        if cv2.contourArea(cnt) < min_area: 
-            return (None, mask) if return_mask else None
-        peri = cv2.arcLength(cnt, True)
-        eps  = epsilon_ratio * peri
-        poly = cv2.approxPolyDP(cnt, eps, True)  # Douglas–Peucker
-        poly = poly.reshape(-1, 2).astype(np.float32)
-        return (poly, mask) if return_mask else poly
-    else:
-        # Subpixel option via marching squares
-        from skimage import measure
-        # find_contours returns (row, col) in float coords
-        contours = measure.find_contours(mask.astype(np.float32)/255.0, 0.5)
-        if not contours: 
-            return (None, mask) if return_mask else None
-        # choose largest by polygon area (convert to x,y)
-        def area_xy(pts):
-            x = pts[:,1]; y = pts[:,0]
-            return 0.5*np.abs(np.dot(x, np.roll(y,-1)) - np.dot(y, np.roll(x,-1)))
-        largest = max(contours, key=lambda c: area_xy(c))
-        xy = np.stack([largest[:,1], largest[:,0]], axis=1).astype(np.float32)  # (x,y)
-        # Optional: simplify with RDP (OpenCV needs integer input; cast then back)
-        xy_int = xy.astype(np.int32).reshape(-1,1,2)
-        peri = cv2.arcLength(xy_int, True)
-        eps  = epsilon_ratio * peri
-        approx = cv2.approxPolyDP(xy_int, eps, True).reshape(-1,2).astype(np.float32)
-        return (approx, mask) if return_mask else approx
+    contour_start = time.time()
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts: 
+        contour_time = (time.time() - contour_start) * 1000
+        if timing_stats:
+            timing_stats.add_timing('find_contour', contour_time)
+        return (None, mask) if return_mask else None
+    
+    cnt = max(cnts, key=cv2.contourArea)
+    if cv2.contourArea(cnt) < min_area: 
+        contour_time = (time.time() - contour_start) * 1000
+        if timing_stats:
+            timing_stats.add_timing('find_contour', contour_time)
+        return (None, mask) if return_mask else None
+    
+    # Generate polygon
+    polygon_start = time.time()
+    peri = cv2.arcLength(cnt, True)
+    eps  = epsilon_ratio * peri
+    poly = cv2.approxPolyDP(cnt, eps, True)  # Douglas–Peucker
+    poly = poly.reshape(-1, 2).astype(np.float32)
+    polygon_time = (time.time() - polygon_start) * 1000
+    if timing_stats:
+        timing_stats.add_timing('generate_polygon', polygon_time)
+    
+    contour_time = (time.time() - contour_start) * 1000
+    if timing_stats:
+        timing_stats.add_timing('find_contour', contour_time)
+    
+    return (poly, mask) if return_mask else poly
 
 
 def draw_polygon_on_image(image, polygon, color=(0, 255, 0), thickness=2, fill_alpha=0.3):
