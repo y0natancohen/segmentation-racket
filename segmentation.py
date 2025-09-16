@@ -103,6 +103,20 @@ def simple_background_removal(frame, bg):
     
     return result.astype(np.uint8), mask
 
+def check_port_available(port):
+    """Check if a port is available, raise error if not"""
+    import socket
+    
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('', port))
+            return True
+    except OSError as e:
+        if e.errno == 98:  # Address already in use
+            raise RuntimeError(f"Port {port} is already in use. Please stop any existing segmentation processes or use a different port with --web_port")
+        else:
+            raise RuntimeError(f"Failed to bind to port {port}: {e}")
+
 def setup_web_display(port):
     """Setup simple HTTP server for web display"""
     import http.server
@@ -204,6 +218,9 @@ def setup_web_display(port):
             else:
                 self.send_response(404)
                 self.end_headers()
+    
+    # Check if port is available
+    check_port_available(port)
     
     handler = WebDisplayHandler
     httpd = socketserver.TCPServer(("", port), handler)
@@ -308,6 +325,30 @@ def main():
             print(f"Failed to start web server: {e}")
             print("Falling back to headless mode")
             display_mode = "headless"
+
+    # Setup signal handling for graceful shutdown
+    import signal
+    import sys
+    
+    def signal_handler(signum, frame):
+        print(f"\nReceived signal {signum}, shutting down...")
+        try:
+            if web_server is not None:
+                print("Shutting down web server...")
+                web_server.shutdown()
+                web_server.server_close()
+            cap.release()
+            # Only try to destroy windows if GUI is supported
+            if gui_supported:
+                cv2.destroyAllWindows()
+        except Exception as e:
+            print(f"Error during shutdown: {e}")
+        finally:
+            print("Shutdown complete")
+            sys.exit(0)
+    
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
     with torch.inference_mode():
         while True:
@@ -513,7 +554,15 @@ def main():
                     if not (a.save_images or a.save_segmentation or a.save_composite):
                         os.makedirs(a.output_dir, exist_ok=True)
 
-    cap.release(); cv2.destroyAllWindows()
+    # Cleanup
+    cap.release()
+    # Only try to destroy windows if GUI is supported
+    if gui_supported:
+        cv2.destroyAllWindows()
+    if web_server is not None:
+        print("Shutting down web server...")
+        web_server.shutdown()
+        web_server.server_close()
 
 
 def matte_to_polygon(pha, threshold=0.5, min_area=2000, epsilon_ratio=0.015, use_skimage=False, return_mask=False):
