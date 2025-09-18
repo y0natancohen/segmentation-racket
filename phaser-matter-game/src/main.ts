@@ -192,6 +192,7 @@ export class MainScene extends Phaser.Scene {
     // Create a graphics object to draw the polygon
     this.platform = this.add.graphics();
     this.platform.setPosition(x, y);
+    this.platform.setDepth(100); // Ensure polygon is above video (depth 0)
     
     // Create initial Matter.js body for physics (will be updated with real vertices)
     const initialVertices = [
@@ -464,18 +465,14 @@ export class MainScene extends Phaser.Scene {
         padding: { x: 8, y: 4 }
       }).setDepth(2000);
       
-      // Set depth to be in front so we can see it
-      this.webcamVideo.setDepth(500); // Bring to front
+      // Set depth to be behind all other objects
+      this.webcamVideo.setDepth(0); // Background layer
       console.log('Video depth set to:', this.webcamVideo.depth);
       
       // Force refresh the video object
       this.webcamVideo.setVisible(true);
       this.webcamVideo.setActive(true);
       console.log('Video visibility forced to true');
-      
-      // Try bringing video to the front to see if it's there
-      this.webcamVideo.setDepth(1000);
-      console.log('Video brought to front with depth 1000');
       
       // Check if video is actually playing
       console.log('Video is playing:', this.webcamVideo.isPlaying());
