@@ -1,5 +1,9 @@
 import Phaser from "phaser";
 
+// Game dimensions constants - use full window size
+const GAME_WIDTH = window.innerWidth;
+const GAME_HEIGHT = window.innerHeight;
+
 interface PolygonMessage {
   position: { x: number; y: number };
   vertices: { x: number; y: number }[];
@@ -28,6 +32,10 @@ export class MainScene extends Phaser.Scene {
   private lastFpsUpdateTime: number = 0;
   private currentFps: number = 0;
   private connectionStartTime: number = 0;
+  
+  // Webcam integration
+  private webcamVideo!: Phaser.GameObjects.Video;
+  private webcamError: string | null = null;
 
   constructor() { super("main"); }
 
@@ -48,35 +56,65 @@ export class MainScene extends Phaser.Scene {
   }
 
   create() {
-    const size = 600;
-    this.cameras.main.setBackgroundColor(0xffffff);
-    this.scale.resize(size, size); // 600x600 “square board”
+    console.log("=== CREATE METHOD CALLED ===");
+    console.log("Game scale dimensions:", this.scale.width, this.scale.height);
+    
+    // Test: Create a simple rectangle to see if basic rendering works
+    const testRect = this.add.rectangle(100, 100, 100, 100, 0x00ff00);
+    testRect.setDepth(1000);
+    
+    // Add visual debugging text instead of console logging
+    this.add.text(10, 10, "Game Started - Console logging not working", {
+      fontSize: '16px',
+      color: '#ffffff',
+      backgroundColor: '#000000',
+      padding: { x: 8, y: 4 }
+    }).setDepth(2000);
+    
+    // Set up webcam background using Phaser Video Game Object
+    this.setupWebcamBackground();
+    
+    // Handle window resize using Phaser scale system
+    this.scale.on('resize', (gameSize: any) => {
+      const { width, height } = gameSize;
+      if (this.webcamVideo) {
+        console.log('Resizing video to:', width, height);
+        // this.webcamVideo.setPosition(width / 2, height / 2);
+        this.webcamVideo.setPosition(0, 0);
+        this.webcamVideo.setDisplaySize(width, height);
+        this.webcamVideo.setScale(0.1); // Maintain the scaled down size
+        console.log('Video position after:', this.webcamVideo.x, this.webcamVideo.y);
+        console.log('Video scale after:', this.webcamVideo.scaleX, this.webcamVideo.scaleY);
+      }
+      // Update physics world bounds
+      this.matter.world.setBounds(0, 0, width, height);
+    });
 
     // Enable Matter physics
-    this.matter.world.setBounds(0, 0, size, size);
+    this.matter.world.setBounds(0, 0, this.scale.width, this.scale.height);
     this.matter.world.setGravity(0, 1); // gravity down
-    
+
     // Raise solver iterations for more accurate, less "mushy" collisions
     this.matter.world.engine.positionIterations = 8; // default ~6
     this.matter.world.engine.velocityIterations = 6; // default ~4
     this.matter.world.engine.constraintIterations = 4; // default ~2
 
     // Create initial ball
-    this.createBall(size / 2, 50);
+    this.createBall(this.scale.width / 2, 50);
 
     // Set up timer to spawn new balls every second
     this.ballSpawnTimer = this.time.addEvent({
       delay: 1000, // 1 second
       callback: () => {
         // Spawn ball at random x position near the top
-        const x = Phaser.Math.Between(50, size - 50);
+        const x = Phaser.Math.Between(50, this.scale.width - 50);
         this.createBall(x, 50);
       },
       loop: true
     });
 
     // Floor (bottom of the square) with bouncy physics
-    this.matter.add.rectangle(size / 2, size - 10, size - 20, 20, { 
+    this.matter.add.rectangle(this.scale.width / 2, this.scale.height - 10, this.scale.width - 20, 20, { 
       isStatic: true,
       restitution: 0.95,
       friction: 0.001,
@@ -100,7 +138,7 @@ export class MainScene extends Phaser.Scene {
     }
 
     // Create initial polygon platform (will be updated from WebSocket data)
-    this.createPolygonPlatform(size / 2, size * 0.7);
+    this.createPolygonPlatform(this.scale.width / 2, this.scale.height * 0.7);
 
     this.initializeWebSocketConnection();
 
@@ -134,7 +172,7 @@ export class MainScene extends Phaser.Scene {
   update() {
     // Clean up balls that have fallen off the screen
     this.balls = this.balls.filter(ball => {
-      if (ball.y > 650) { // If ball is below the screen
+      if (ball.y > this.scale.height + 100) { // If ball is below the screen
         ball.destroy();
         return false; // Remove from array
       }
@@ -341,11 +379,137 @@ export class MainScene extends Phaser.Scene {
     }
   }
 
+  private async setupWebcamBackground(): Promise<void> {
+    try {
+      console.log("Requesting webcam access...");
+      
+      // Request webcam access
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { 
+          width: { ideal: GAME_WIDTH },
+          height: { ideal: GAME_HEIGHT },
+          facingMode: 'user' // Front-facing camera
+        } 
+      });
+      
+      console.log("Webcam stream obtained:", stream);
+      console.log("About to create video object...");
+      
+      // Create Phaser Video Game Object at center of screen
+      this.webcamVideo = this.add.video(this.scale.width / 2, this.scale.height / 2);
+      console.log('Creating video at position:', this.scale.width / 2, this.scale.height / 2);
+      
+      // Add visual debugging text
+      this.add.text(10, 40, "Video object created", {
+        fontSize: '14px',
+        color: '#ffffff',
+        backgroundColor: '#000000',
+        padding: { x: 8, y: 4 }
+      }).setDepth(2000);
+      
+      // Load the media stream into the Video object
+      this.webcamVideo.loadMediaStream(stream);
+      
+      // Add visual debugging text
+      this.add.text(10, 60, "Media stream loaded", {
+        fontSize: '14px',
+        color: '#ffffff',
+        backgroundColor: '#000000',
+        padding: { x: 8, y: 4 }
+      }).setDepth(2000);
+      
+      // Play the video
+      this.webcamVideo.play();
+      
+      // Add visual debugging text
+      this.add.text(10, 80, "Video started playing", {
+        fontSize: '14px',
+        color: '#ffffff',
+        backgroundColor: '#000000',
+        padding: { x: 8, y: 4 }
+      }).setDepth(2000);
+      
+      // Set the video size to cover the entire game area using scale dimensions
+      // Scale the video to fit the screen properly - try scaling down
+      this.webcamVideo.setDisplaySize(this.scale.width, this.scale.height);
+      this.webcamVideo.setScale(1.0); // Set to full size for now
+      
+      // Position the video at the center of the screen using fixed coordinates
+      this.webcamVideo.setPosition(400, 300); // Fixed center position
+      
+      // Add a visual indicator to show where the video should be
+      const videoIndicator = this.add.rectangle(400, 300, 200, 200, 0xff0000);
+      videoIndicator.setDepth(400); // Behind video but visible
+      videoIndicator.setAlpha(0.5); // Semi-transparent
+      
+      // Add visual debugging text with video info
+      this.add.text(10, 100, `Video pos: ${this.webcamVideo.x}, ${this.webcamVideo.y}`, {
+        fontSize: '14px',
+        color: '#ffffff',
+        backgroundColor: '#000000',
+        padding: { x: 8, y: 4 }
+      }).setDepth(2000);
+      
+      this.add.text(10, 120, `Video scale: ${this.webcamVideo.scaleX}, ${this.webcamVideo.scaleY}`, {
+        fontSize: '14px',
+        color: '#ffffff',
+        backgroundColor: '#000000',
+        padding: { x: 8, y: 4 }
+      }).setDepth(2000);
+      
+      this.add.text(10, 140, `Screen size: ${this.scale.width} x ${this.scale.height}`, {
+        fontSize: '14px',
+        color: '#ffffff',
+        backgroundColor: '#000000',
+        padding: { x: 8, y: 4 }
+      }).setDepth(2000);
+      
+      // Set depth to be in front so we can see it
+      this.webcamVideo.setDepth(500); // Bring to front
+      console.log('Video depth set to:', this.webcamVideo.depth);
+      
+      // Force refresh the video object
+      this.webcamVideo.setVisible(true);
+      this.webcamVideo.setActive(true);
+      console.log('Video visibility forced to true');
+      
+      // Try bringing video to the front to see if it's there
+      this.webcamVideo.setDepth(1000);
+      console.log('Video brought to front with depth 1000');
+      
+      // Check if video is actually playing
+      console.log('Video is playing:', this.webcamVideo.isPlaying());
+      console.log('Video duration:', this.webcamVideo.duration);
+      console.log('Video current time:', this.webcamVideo.currentTime);
+      
+      // Test: Create a colored rectangle in the same position to see if positioning works
+      const testRect = this.add.rectangle(this.scale.width / 2, this.scale.height / 2, 200, 200, 0xff0000);
+      testRect.setDepth(999);
+      console.log('Test rectangle created at center');
+      
+      console.log("Webcam background set up successfully using Phaser Video Game Object");
+      
+    } catch (error) {
+      console.error("Failed to initialize webcam:", error);
+      this.webcamError = `Webcam error: ${error instanceof Error ? error.message : 'Unknown error'}`;
+      
+      // Fallback to white background if webcam fails
+      this.cameras.main.setBackgroundColor(0xffffff);
+    }
+  }
+  
+
   shutdown(): void {
     // Clean up WebSocket connection
     if (this.ws) {
       this.ws.close();
       this.ws = null;
+    }
+    
+    // Clean up webcam
+    if (this.webcamVideo) {
+      this.webcamVideo.stop();
+      this.webcamVideo.destroy();
     }
   }
 }
@@ -353,9 +517,9 @@ export class MainScene extends Phaser.Scene {
 new Phaser.Game({
   type: Phaser.AUTO,
   parent: document.body,         // attach to <body>
-  backgroundColor: "#ffffff",
-  width: 600,
-  height: 600,
+  backgroundColor: 0x000000,     // Black background
+  width: GAME_WIDTH,
+  height: GAME_HEIGHT,
   physics: {
     default: "matter",
     matter: {
@@ -363,4 +527,11 @@ new Phaser.Game({
     },
   },
   scene: [MainScene],
+  render: {
+    transparent: true,           // Make canvas transparent
+  },
+  scale: {
+    mode: Phaser.Scale.RESIZE,   // Resize to fit window
+    autoCenter: Phaser.Scale.CENTER_BOTH
+  }
 });

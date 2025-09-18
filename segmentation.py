@@ -2,6 +2,8 @@ import os
 import sys
 import time
 import argparse
+import asyncio
+import threading
 from collections import deque
 
 import cv2
@@ -11,6 +13,19 @@ from PIL import Image
 
 sys.path.append('rvm')
 from model import MattingNetwork
+
+# Import the polygon bridge
+from segmentation_polygon_bridge import SegmentationPolygonBridge, set_bridge, send_segmentation_polygon
+
+# Camera and game dimensions constants
+CAMERA_WIDTH = 1280
+CAMERA_HEIGHT = 720
+CAMERA_ASPECT_RATIO = CAMERA_WIDTH / CAMERA_HEIGHT  # 16:9 ≈ 1.78
+
+# Game dimensions (should match camera aspect ratio)
+GAME_WIDTH = 800  # 16:9 aspect ratio
+GAME_HEIGHT = 450  # 16:9 aspect ratio
+GAME_ASPECT_RATIO = GAME_WIDTH / GAME_HEIGHT  # Should equal CAMERA_ASPECT_RATIO
 
 
 class TimingStats:
@@ -80,8 +95,8 @@ Examples:
   python segmentation.py --web_display --bg solid --solid_bgr 255 0 0
                                """)
     p.add_argument("--cam", type=int, default=0)
-    p.add_argument("--width", type=int, default=1280)
-    p.add_argument("--height", type=int, default=720)
+    p.add_argument("--width", type=int, default=CAMERA_WIDTH)
+    p.add_argument("--height", type=int, default=CAMERA_HEIGHT)
     p.add_argument("--dsr", type=float, default=0.25, help="downsample_ratio")
     p.add_argument("--bg", choices=["blur","solid","image","transparent"], default="blur")
     p.add_argument("--bg_image", type=str, default=None)
@@ -101,6 +116,8 @@ Examples:
     p.add_argument("--polygon_epsilon", type=float, default=0.0015, help="Epsilon ratio for polygon simplification")
     p.add_argument("--web_display", action="store_true", help="Display in web browser using simple HTTP server")
     p.add_argument("--web_port", type=int, default=8080, help="Port for web display")
+    p.add_argument("--polygon_bridge", action="store_true", help="Send polygon data to Phaser game via WebSocket")
+    p.add_argument("--polygon_bridge_port", type=int, default=8765, help="Port for polygon bridge WebSocket")
     return p.parse_args()
 
 def to_torch_image(frame_bgr, device, half):
@@ -115,20 +132,6 @@ def to_torch_bg(image_bgr, device, half):
     if half and device.type == "cuda": ten = ten.half()
     return ten
 
-
-def check_port_available(port):
-    """Check if a port is available, raise error if not"""
-    import socket
-    
-    try:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind(('', port))
-            return True
-    except OSError as e:
-        if e.errno == 98:  # Address already in use
-            raise RuntimeError(f"Port {port} is already in use. Please stop any existing segmentation processes or use a different port with --web_port")
-        else:
-            raise RuntimeError(f"Failed to bind to port {port}: {e}")
 
 def setup_web_display(port):
     """Setup simple HTTP server for web display"""
@@ -289,13 +292,17 @@ def setup_web_display(port):
                 self.send_response(404)
                 self.end_headers()
     
-    # Check if port is available
-    check_port_available(port)
-    
-    handler = WebDisplayHandler
-    httpd = socketserver.TCPServer(("", port), handler)
-    print(f"Web display server started at http://localhost:{port}")
-    return httpd, handler, latest_frame_data, system_info
+    # Try to create the server and handle port binding errors gracefully
+    try:
+        handler = WebDisplayHandler
+        httpd = socketserver.TCPServer(("", port), handler)
+        print(f"Web display server started at http://localhost:{port}")
+        return httpd, handler, latest_frame_data, system_info
+    except OSError as e:
+        if e.errno == 98:  # Address already in use
+            raise RuntimeError(f"Port {port} is already in use. Please stop any existing segmentation processes or use a different port with --web_port")
+        else:
+            raise RuntimeError(f"Failed to bind to port {port}: {e}")
 
 def setup_model(args):
     """Setup and load the RVM model"""
@@ -330,6 +337,8 @@ def setup_camera(args):
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, args.width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, args.height)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    cam_fps = cap.get(cv2.CAP_PROP_FPS)
+    print(f"Actual FPS: {cam_fps}")
     return cap
 
 def setup_background(args):
@@ -581,13 +590,25 @@ def cleanup_resources(cap, web_server):
         web_server.shutdown()
         web_server.server_close()
 
-def run_segmentation_loop(args, model, dev, cap, bg_img, web_server, latest_frame_data, system_info):
+def run_segmentation_loop(args, model, dev, cap, bg_img, web_server, latest_frame_data, system_info, polygon_bridge=None):
     """Main segmentation processing loop"""
     rec = [None, None, None, None]
     last = time.time()
     fps = 0.0
     frame_count = 0
     timing_stats = TimingStats()
+    
+    # Start polygon bridge server if enabled
+    bridge_thread = None
+    if polygon_bridge:
+        def run_bridge():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(polygon_bridge.start_server())
+        
+        bridge_thread = threading.Thread(target=run_bridge, daemon=True)
+        bridge_thread.start()
+        time.sleep(1)  # Give the server time to start
     
     with torch.inference_mode():
         while True:
@@ -616,6 +637,28 @@ def run_segmentation_loop(args, model, dev, cap, bg_img, web_server, latest_fram
             fps_time = (time.time() - fps_start) * 1000
             timing_stats.add_timing('fps_calculation', fps_time)
             
+            # Send polygon data to bridge if enabled
+            if polygon_bridge and polygon is not None:
+                try:
+                    # Send raw polygon coordinates - scaling will be handled by the bridge
+                    frame_height, frame_width = frame.shape[:2]
+                    
+                    # Send polygon data synchronously using the bridge's method
+                    # Create a new event loop for this call
+                    def send_polygon():
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        loop.run_until_complete(polygon_bridge.send_polygon_data(
+                            polygon,  # Send raw polygon coordinates
+                            frame_size=(frame_width, frame_height)
+                        ))
+                        loop.close()
+                    
+                    # Run in a separate thread to avoid blocking
+                    threading.Thread(target=send_polygon, daemon=True).start()
+                except Exception as e:
+                    print(f"Error sending polygon to bridge: {e}")
+            
             # Update status display
             view = update_status_display(view, fps, args, polygon, system_info, timing_stats)
             
@@ -640,6 +683,19 @@ def run_segmentation_loop(args, model, dev, cap, bg_img, web_server, latest_fram
                 print(f"Timing breakdown: Camera={averages['camera_capture']:.1f}ms, "
                       f"Processing={averages['data_prep'] + averages['model_inference'] + averages['thresholding'] + averages['find_contour'] + averages['generate_polygon'] + averages['build_display']:.1f}ms, "
                       f"Total={averages['total_frame']:.1f}ms")
+    
+    # Cleanup bridge thread
+    if bridge_thread and bridge_thread.is_alive():
+        # The thread will be cleaned up automatically as a daemon thread
+        pass
+
+def setup_polygon_bridge(args):
+    """Setup polygon bridge for sending data to Phaser game"""
+    if args.polygon_bridge:
+        bridge = SegmentationPolygonBridge(port=args.polygon_bridge_port)
+        set_bridge(bridge)
+        return bridge
+    return None
 
 def main():
     """Main function - orchestrates setup, runs segmentation loop, and cleanup"""
@@ -652,12 +708,15 @@ def main():
     web_server, web_handler, latest_frame_data, system_info = setup_display(args)
     setup_output_directories(args)
     setup_signal_handlers(web_server, cap)
+    polygon_bridge = setup_polygon_bridge(args)
 
     # Run main segmentation loop
-    run_segmentation_loop(args, model, dev, cap, bg_img, web_server, latest_frame_data, system_info)
+    run_segmentation_loop(args, model, dev, cap, bg_img, web_server, latest_frame_data, system_info, polygon_bridge)
 
     # Cleanup
     cleanup_resources(cap, web_server)
+    if polygon_bridge:
+        polygon_bridge.stop()
 
 
 def matte_to_polygon(pha, threshold=0.5, min_area=2000, epsilon_ratio=0.015, return_mask=False, timing_stats=None):
