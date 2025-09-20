@@ -85,8 +85,8 @@ export class MainScene extends Phaser.Scene {
       // Update camera size properly
       this.cameras.main.setSize(width, height);
       
-      // Reconfigure video layout with new dimensions
-      this.configureVideoLayout();
+      // Resize video using the single method
+      this.resizeVideoToGameSize(width, height);
       
       // Ensure all game objects are still visible and properly positioned
       this.cameras.main.setBackgroundColor(0x000000);
@@ -429,7 +429,13 @@ export class MainScene extends Phaser.Scene {
       // Play the video
       this.webcamVideo.play();
       
-      // Configure all video layout settings in one place
+      // Wait for video to be ready before configuring layout
+      this.webcamVideo.on('loadeddata', () => {
+        console.log('Video data loaded, configuring layout...');
+        this.configureVideoLayout();
+      });
+      
+      // Also configure immediately in case the event doesn't fire
       this.configureVideoLayout();
       
       console.log("Webcam background set up successfully using Phaser Video Game Object");
@@ -458,12 +464,6 @@ export class MainScene extends Phaser.Scene {
     // Set video origin to top-left (0, 0) for proper full-screen positioning
     this.webcamVideo.setOrigin(0, 0);
     
-    // Set video size to cover the entire game area
-    this.webcamVideo.setDisplaySize(gameWidth, gameHeight);
-    
-    // Reset scale to 1.0 to ensure proper sizing
-    this.webcamVideo.setScale(1.0);
-    
     // Position video at top-left corner (0, 0) since origin is now top-left
     this.webcamVideo.setPosition(0, 0);
     
@@ -479,14 +479,17 @@ export class MainScene extends Phaser.Scene {
       this.webcamVideo.play();
     }
     
-    // Video should now be properly configured
+    // Use the single video sizing method
+    this.resizeVideoToGameSize(gameWidth, gameHeight);
     
     // Use multiple logging methods to ensure visibility
     console.log('Video configured - Position:', this.webcamVideo.x, this.webcamVideo.y);
-    console.warn('Video configured - Size:', this.webcamVideo.displayWidth, this.webcamVideo.displayHeight);
-    console.error('Video configured - Depth:', this.webcamVideo.depth);
+    console.log('Video configured - Size:', this.webcamVideo.displayWidth, this.webcamVideo.displayHeight);
+    console.log('Video configured - Depth:', this.webcamVideo.depth);
     console.log('Game dimensions:', gameWidth, 'x', gameHeight);
     console.log('Video is playing:', this.webcamVideo.isPlaying());
+    console.log('Video scale:', this.webcamVideo.scaleX, this.webcamVideo.scaleY);
+    console.log('Video width/height:', this.webcamVideo.width, this.webcamVideo.height);
     
     // Try DOM-based logging as well
     const debugDiv = document.createElement('div');
@@ -507,7 +510,58 @@ export class MainScene extends Phaser.Scene {
       }
     }, 3000);
   }
-  
+
+  private resizeVideoToGameSize(width: number, height: number): void {
+    if (!this.webcamVideo) return;
+    
+    console.log('Resizing video to game size:', width, 'x', height);
+    
+    // Based on research: Phaser Video objects loaded from loadMediaStream() have limitations
+    // with setDisplaySize(). We need to use setScale() instead.
+    
+    // Get the original video dimensions
+    const videoElement = this.webcamVideo.video;
+    if (videoElement) {
+      const originalWidth = videoElement.videoWidth || videoElement.width || 640;
+      const originalHeight = videoElement.videoHeight || videoElement.height || 480;
+      
+      console.log('Original video dimensions:', originalWidth, 'x', originalHeight);
+      
+      // Calculate scale factors to fill the game area
+      const scaleX = width / originalWidth;
+      const scaleY = height / originalHeight;
+      
+      // Use the larger scale to ensure the video covers the entire area
+      const scale = Math.max(scaleX, scaleY);
+      
+      console.log('Calculated scale factors - X:', scaleX, 'Y:', scaleY, 'Final scale:', scale);
+      
+      // Apply the scale to the video
+      this.webcamVideo.setScale(scale);
+      
+      // Center the video if it's larger than the game area
+      this.webcamVideo.setPosition(width / 2, height / 2);
+      this.webcamVideo.setOrigin(0.5, 0.5);
+      
+      // Also try direct DOM manipulation as backup
+      videoElement.style.width = width + 'px';
+      videoElement.style.height = height + 'px';
+      videoElement.style.objectFit = 'cover';
+      videoElement.style.position = 'absolute';
+      videoElement.style.top = '0px';
+      videoElement.style.left = '0px';
+      videoElement.style.zIndex = '-1';
+    } else {
+      // Fallback: try Phaser methods
+      this.webcamVideo.setDisplaySize(width, height);
+      this.webcamVideo.setPosition(0, 0);
+      this.webcamVideo.setOrigin(0, 0);
+    }
+    
+    console.log('Video resized - Final scale:', this.webcamVideo.scaleX, this.webcamVideo.scaleY);
+    console.log('Video resized - Position:', this.webcamVideo.x, this.webcamVideo.y);
+    console.log('Video resized - Display size:', this.webcamVideo.displayWidth, 'x', this.webcamVideo.displayHeight);
+  }
 
   shutdown(): void {
     // Clean up WebSocket connection
