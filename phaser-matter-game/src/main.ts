@@ -35,7 +35,6 @@ export class MainScene extends Phaser.Scene {
   
   // Webcam integration
   private webcamVideo!: Phaser.GameObjects.Video;
-  private webcamError: string | null = null;
 
   constructor() { super("main"); }
 
@@ -442,7 +441,6 @@ export class MainScene extends Phaser.Scene {
       
     } catch (error) {
       console.error("Failed to initialize webcam:", error);
-      this.webcamError = `Webcam error: ${error instanceof Error ? error.message : 'Unknown error'}`;
       
       // Fallback to white background if webcam fails
       this.cameras.main.setBackgroundColor(0xffffff);
