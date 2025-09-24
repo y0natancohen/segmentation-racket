@@ -1,11 +1,15 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { WebRTCPeerConnection } from './webrtc/pc';
-import { getUserMedia, stopUserMedia } from './webrtc/getUserMedia';
-import { MetricsCollector, parseRTCStats } from './webrtc/metrics';
+import { useState, useEffect, useRef } from 'react';
+import { 
+  initVideoSystem, 
+  createConnection, 
+  connectVideo, 
+  disconnectVideo,
+  setEventHandlers,
+  cleanupVideoSystem,
+  getDefaultConfig
+} from './video-communication';
 import { Overlay } from './ui/Overlay';
 import { IntensityMetrics, ConnectionStats } from './types';
-
-const SERVER_URL = 'http://localhost:8080';
 
 function App() {
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -18,16 +22,30 @@ function App() {
     messagesPerSecond: 0
   });
   const [error, setError] = useState<string | null>(null);
+  const [connectionId, setConnectionId] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
-  const pcRef = useRef<WebRTCPeerConnection | null>(null);
-  const metricsCollectorRef = useRef<MetricsCollector | null>(null);
 
   const startCamera = async () => {
     try {
       setError(null);
       console.log('Requesting camera access...');
-      const mediaStream = await getUserMedia();
+      
+      // Create connection
+      const connId = `conn_${Date.now()}`;
+      setConnectionId(connId);
+      await createConnection(connId);
+      
+      // Start camera using the new API
+      const mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          width: { ideal: 640, max: 640 },
+          height: { ideal: 360, max: 360 },
+          frameRate: { ideal: 30, max: 30 },
+          facingMode: 'user'
+        },
+        audio: false
+      });
       console.log('Camera stream obtained:', mediaStream);
       
       // Set the stream state - useEffect will handle video setup
@@ -40,83 +58,66 @@ function App() {
   };
 
   const connect = async () => {
-    if (!stream) {
-      setError('No camera stream available');
+    if (!stream || !connectionId) {
+      setError('No camera stream or connection available');
       return;
     }
 
     try {
       setError(null);
       
-      // Create new peer connection
-      const pc = new WebRTCPeerConnection();
-      pcRef.current = pc;
-
-      // Create metrics collector
-      const metricsCollector = new MetricsCollector();
-      metricsCollectorRef.current = metricsCollector;
-
-      // Set up data channel
-      const dataChannel = pc.createDataChannel({
-        ordered: false,
-        maxRetransmits: 0,
-        protocol: 'intensity-v1'
-      });
-
-      // Handle data channel messages
-      pc.setOnDataChannelMessage((data) => {
-        metricsCollector.handleMessage(data);
-        const latestMetrics = metricsCollector.getLatestMetrics();
-        if (latestMetrics) {
-          setMetrics(latestMetrics);
-        }
-      });
-
-      // Handle connection state changes
-      pc.setOnConnectionStateChange((state) => {
-        setIsConnected(state === 'connected');
-      });
-
-      // Set up stats monitoring
-      metricsCollector.setOnStatsUpdate((newStats) => {
-        setStats(prev => ({ ...prev, ...newStats }));
-      });
-
-      // Add video track
-      await pc.addVideoTrack(stream);
-
-      // Create offer and signal to server
-      const offer = await pc.createOffer();
-      await pc.signalToServer(offer, SERVER_URL);
-
+      // Connect using the new API
+      await connectVideo(connectionId, stream);
       setIsConnected(true);
+      
     } catch (err) {
       setError(`Connection failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
       setIsConnected(false);
     }
   };
 
-  const disconnect = () => {
-    if (pcRef.current) {
-      pcRef.current.close();
-      pcRef.current = null;
-    }
-    if (metricsCollectorRef.current) {
-      metricsCollectorRef.current.destroy();
-      metricsCollectorRef.current = null;
+  const disconnect = async () => {
+    if (connectionId) {
+      await disconnectVideo(connectionId);
     }
     setIsConnected(false);
     setMetrics(null);
   };
 
-  const reconnect = () => {
-    disconnect();
-    setTimeout(() => {
-      if (stream) {
-        connect();
+  const reconnect = async () => {
+    await disconnect();
+    setTimeout(async () => {
+      if (stream && connectionId) {
+        await connect();
       }
     }, 1000);
   };
+
+  // Initialize video system
+  useEffect(() => {
+    const config = getDefaultConfig();
+    initVideoSystem(config);
+    
+    // Set up event handlers
+    setEventHandlers({
+      onIntensityUpdate: (_, intensityMetrics) => {
+        setMetrics(intensityMetrics);
+      },
+      onConnectionStateChange: (_, state) => {
+        setIsConnected(state === 'connected');
+      },
+      onStatsUpdate: (_, newStats) => {
+        setStats(prev => ({ ...prev, ...newStats }));
+      },
+      onError: (_, error) => {
+        setError(`Video error: ${error.message}`);
+      }
+    });
+    
+    return () => {
+      cleanupVideoSystem();
+    };
+  }, []);
 
   // Handle video element setup when stream changes
   useEffect(() => {
@@ -139,31 +140,15 @@ function App() {
     }
   }, [stream]);
 
-  // Update stats from RTC stats
-  useEffect(() => {
-    if (!isConnected || !pcRef.current) return;
-
-    const updateStats = async () => {
-      try {
-        const rtcStats = await pcRef.current!.getStats();
-        const parsedStats = parseRTCStats(rtcStats);
-        setStats(prev => ({ ...prev, ...parsedStats }));
-      } catch (err) {
-        console.error('Failed to get RTC stats:', err);
-      }
-    };
-
-    const interval = setInterval(updateStats, 1000);
-    return () => clearInterval(interval);
-  }, [isConnected]);
-
   // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (stream) {
-        stopUserMedia(stream);
+        stream.getTracks().forEach(track => track.stop());
       }
-      disconnect();
+      if (connectionId) {
+        disconnectVideo(connectionId);
+      }
     };
   }, []);
 
