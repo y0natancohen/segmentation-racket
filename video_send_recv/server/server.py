@@ -86,11 +86,19 @@ class WebRTCServer:
             # Use the video API to handle the connection
             answer = await connect_video(connection_id, sdp, offer_type)
             
+            # Start segmentation processor for this connection if integrated system is available
+            if hasattr(self, 'app') and 'integrated_system' in self.app:
+                integrated_system = self.app['integrated_system']
+                if hasattr(integrated_system, 'start_segmentation_for_connection'):
+                    await integrated_system.start_segmentation_for_connection(connection_id)
+            
             # Return answer
             return web.json_response(answer)
             
         except Exception as e:
             logger.error(f"Error handling offer: {e}")
+            import traceback
+            logger.error(f"Full traceback: {traceback.format_exc()}")
             return web.json_response(
                 {"error": str(e)}, 
                 status=500
@@ -122,7 +130,11 @@ class WebRTCServer:
     
     async def broadcast_polygon_data(self, polygon_data: dict):
         """Broadcast polygon data to all connected WebSocket clients."""
+        logger.info(f"📡 Broadcasting polygon data to {len(self.websocket_clients)} clients")
+        logger.info(f"📡 Polygon data: {polygon_data}")
+        
         if not self.websocket_clients:
+            logger.warning("No WebSocket clients connected")
             return
         
         message = json.dumps(polygon_data)
@@ -131,6 +143,7 @@ class WebRTCServer:
         for ws in self.websocket_clients:
             try:
                 await ws.send_str(message)
+                logger.info(f"✅ Sent polygon data to client")
             except Exception as e:
                 logger.error(f"Error sending polygon data to client: {e}")
                 disconnected_clients.add(ws)

@@ -10,6 +10,7 @@ import {
 } from './video-communication';
 import { Overlay } from './ui/Overlay';
 import { IntensityMetrics, ConnectionStats } from './types';
+import PolygonDisplay from './components/PolygonDisplay';
 
 function App() {
   const [stream, setStream] = useState<MediaStream | null>(null);
@@ -263,37 +264,53 @@ function App() {
       </div>
 
       {stream && (
-        <video
-          ref={videoRef}
-          autoPlay
-          playsInline
-          muted
-          onLoadedMetadata={() => {
-            console.log('Video metadata loaded');
-            console.log('Video dimensions:', videoRef.current?.videoWidth, 'x', videoRef.current?.videoHeight);
-          }}
-          onCanPlay={() => {
-            console.log('Video can play');
-            console.log('Video readyState:', videoRef.current?.readyState);
-          }}
-          onPlay={() => {
-            console.log('Video started playing');
-            console.log('Video currentTime:', videoRef.current?.currentTime);
-          }}
-          onError={(e) => {
-            console.error('Video error:', e);
-            console.error('Video error details:', e.currentTarget?.error);
-          }}
-          onLoadStart={() => console.log('Video load started')}
-          onLoadedData={() => console.log('Video data loaded')}
-          style={{
-            width: '640px',
-            height: '360px',
-            border: '2px solid #333',
-            borderRadius: '8px',
-            backgroundColor: '#222'
-          }}
-        />
+        <div style={{
+          display: 'flex',
+          gap: '20px',
+          alignItems: 'center',
+          justifyContent: 'center'
+        }}>
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            onLoadedMetadata={() => {
+              console.log('Video metadata loaded');
+              console.log('Video dimensions:', videoRef.current?.videoWidth, 'x', videoRef.current?.videoHeight);
+            }}
+            onCanPlay={() => {
+              console.log('Video can play');
+              console.log('Video readyState:', videoRef.current?.readyState);
+            }}
+            onPlay={() => {
+              console.log('Video started playing');
+              console.log('Video currentTime:', videoRef.current?.currentTime);
+            }}
+            onError={(e) => {
+              console.error('Video error:', e);
+              console.error('Video error details:', e.currentTarget?.error);
+            }}
+            onLoadStart={() => console.log('Video load started')}
+            onLoadedData={() => console.log('Video data loaded')}
+            style={{
+              width: '640px',
+              height: '360px',
+              border: '2px solid #333',
+              borderRadius: '8px',
+              backgroundColor: '#222'
+            }}
+          />
+          
+          <PolygonDisplay
+            width={640}
+            height={360}
+            style={{
+              border: '2px solid #333',
+              borderRadius: '8px'
+            }}
+          />
+        </div>
       )}
 
       {!stream && (

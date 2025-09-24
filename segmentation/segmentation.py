@@ -118,6 +118,7 @@ Examples:
     p.add_argument("--web_port", type=int, default=8080, help="Port for web display")
     p.add_argument("--polygon_bridge", action="store_true", help="Send polygon data to Phaser game via WebSocket")
     p.add_argument("--polygon_bridge_port", type=int, default=8765, help="Port for polygon bridge WebSocket")
+    p.add_argument("--video_communication", action="store_true", help="Use video communication system instead of direct camera")
     return p.parse_args()
 
 def to_torch_image(frame_bgr, device, half):
@@ -701,6 +702,17 @@ def main():
     """Main function - orchestrates setup, runs segmentation loop, and cleanup"""
     args = parse_args()
     
+    # Check if we should use video communication integration
+    if hasattr(args, 'video_communication') and args.video_communication:
+        # Use video communication integration
+        run_video_communication_segmentation(args)
+    else:
+        # Use traditional camera-based segmentation
+        run_traditional_segmentation(args)
+
+
+def run_traditional_segmentation(args):
+    """Run traditional camera-based segmentation."""
     # Setup components
     model, dev = setup_model(args)
     cap = setup_camera(args)
@@ -717,6 +729,21 @@ def main():
     cleanup_resources(cap, web_server)
     if polygon_bridge:
         polygon_bridge.stop()
+
+
+def run_video_communication_segmentation(args):
+    """Run segmentation using video communication system."""
+    import asyncio
+    import sys
+    import os
+    
+    # Add video communication path
+    sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'video_send_recv', 'server'))
+    
+    from video_segmentation_integration import run_video_segmentation
+    
+    # Run the video communication segmentation
+    asyncio.run(run_video_segmentation(args))
 
 
 def matte_to_polygon(pha, threshold=0.5, min_area=2000, epsilon_ratio=0.015, return_mask=False, timing_stats=None):

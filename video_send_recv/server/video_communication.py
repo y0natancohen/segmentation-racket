@@ -47,6 +47,7 @@ class VideoCommunicationManager:
         self.connection_metrics: Dict[str, ConnectionMetrics] = {}
         self.data_channels: Dict[str, Any] = {}
         self.intensity_callbacks: Dict[str, Callable[[IntensityData], None]] = {}
+        self.frame_processors: Dict[str, Callable[[Dict[str, Any]], None]] = {}
         self.metrics_collector = MetricsCollector()
         
     async def init_connection(self, connection_id: str) -> RTCPeerConnection:
@@ -145,6 +146,21 @@ class VideoCommunicationManager:
                         except Exception as e:
                             logger.error(f"Error in intensity callback: {e}")
                     
+                    # Call frame processor if registered
+                    if connection_id in self.frame_processors:
+                        try:
+                            # Convert frame to numpy array for processing
+                            frame_array = frame.to_ndarray(format="rgb24")
+                            frame_data = {
+                                'frame': frame_array,
+                                'timestamp': time.time(),
+                                'connection_id': connection_id,
+                                'frame_shape': frame_array.shape
+                            }
+                            self.frame_processors[connection_id](frame_data)
+                        except Exception as e:
+                            logger.error(f"Error in frame processor: {e}")
+                    
                     # Log metrics periodically
                     if self.metrics_collector.should_log():
                         self.metrics_collector.log_metrics()
@@ -239,6 +255,21 @@ class VideoCommunicationManager:
         for connection_id in list(self.connections.keys()):
             await self.cleanup_connection(connection_id)
         logger.info("Cleaned up all connections")
+    
+    def set_frame_processor(self, connection_id: str, processor: Callable[[Dict[str, Any]], None]):
+        """Set a frame processor for a specific connection."""
+        self.frame_processors[connection_id] = processor
+        logger.info(f"Set frame processor for connection {connection_id}")
+    
+    def remove_frame_processor(self, connection_id: str):
+        """Remove frame processor for a specific connection."""
+        if connection_id in self.frame_processors:
+            del self.frame_processors[connection_id]
+            logger.info(f"Removed frame processor for connection {connection_id}")
+    
+    def get_data_channel(self, connection_id: str):
+        """Get the data channel for a specific connection."""
+        return self.data_channels.get(connection_id)
 
 
 # Global instance for easy access
