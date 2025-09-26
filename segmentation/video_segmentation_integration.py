@@ -67,6 +67,12 @@ class VideoSegmentationProcessor:
         self.last_process_time = 0
         self.min_process_interval = 1.0 / 15.0  # Max 15 FPS processing
         
+        # Job pool for controlling concurrent processing
+        self.max_concurrent_jobs = 1
+        self.active_jobs = set()  # Track active processing tasks
+        self.job_counter = 0  # Unique job IDs
+        self.dropped_frames = 0  # Track dropped frames
+        
     async def initialize(self):
         """Initialize the segmentation model and video system."""
         try:
@@ -114,6 +120,20 @@ class VideoSegmentationProcessor:
             video_manager.remove_frame_processor(self.connection_id)
         logger.info("Stopped processing frames")
     
+    def set_max_concurrent_jobs(self, max_jobs: int):
+        """Set the maximum number of concurrent processing jobs."""
+        self.max_concurrent_jobs = max_jobs
+        logger.info(f"Set max concurrent jobs to {max_jobs}")
+    
+    def get_job_pool_status(self) -> Dict[str, Any]:
+        """Get current job pool status."""
+        return {
+            'active_jobs': len(self.active_jobs),
+            'max_concurrent_jobs': self.max_concurrent_jobs,
+            'dropped_frames': self.dropped_frames,
+            'job_counter': self.job_counter
+        }
+    
     def _process_frame(self, frame_data: Dict[str, Any]):
         """Process a single frame and generate segmentation polygon."""
         logger.debug(f"Processing frame: is_processing={self.is_processing}, model={self.model is not None}")
@@ -134,8 +154,32 @@ class VideoSegmentationProcessor:
             
         latest_frame_data = self.frame_buffer[-1]
         
-        # Process frame asynchronously to avoid blocking WebRTC pipeline
-        asyncio.create_task(self._process_frame_async(latest_frame_data))
+        # Check if we can start a new processing job
+        if len(self.active_jobs) >= self.max_concurrent_jobs:
+            self.dropped_frames += 1
+            logger.debug(f"Frame dropped: {len(self.active_jobs)}/{self.max_concurrent_jobs} jobs already running (total dropped: {self.dropped_frames})")
+            return
+        
+        # Process frame asynchronously with job pool control
+        asyncio.create_task(self._process_frame_with_job_pool(latest_frame_data))
+    
+    async def _process_frame_with_job_pool(self, frame_data: Dict[str, Any]):
+        """Wrapper method that manages job pool for concurrent processing control."""
+        # Generate unique job ID
+        self.job_counter += 1
+        job_id = self.job_counter
+        
+        # Add job to active jobs set
+        self.active_jobs.add(job_id)
+        logger.debug(f"Started job {job_id}, active jobs: {len(self.active_jobs)}/{self.max_concurrent_jobs}")
+        
+        try:
+            # Process the frame
+            await self._process_frame_async(frame_data)
+        finally:
+            # Remove job from active jobs set
+            self.active_jobs.discard(job_id)
+            logger.debug(f"Completed job {job_id}, active jobs: {len(self.active_jobs)}/{self.max_concurrent_jobs}")
     
     async def _process_frame_async(self, frame_data: Dict[str, Any]):
         """Process frame asynchronously to avoid blocking WebRTC pipeline."""
