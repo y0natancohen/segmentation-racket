@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 @dataclass
 class VideoConfig:
     """Configuration for video processing."""
-    max_samples: int = 30  # Number of frames to average
-    frame_timeout: float = 5.0  # Timeout for frame reception
+    max_samples: int = 2  # Number of frames to average
+    frame_timeout: float = 0.1#5.0  # Timeout for frame reception
     log_interval: float = 1.0  # Log metrics every N seconds
 
 
@@ -171,7 +171,8 @@ class VideoCommunicationManager:
                     continue
                 except Exception as e:
                     logger.warning(f"Error processing frame for {connection_id}: {e}")
-                    continue
+                    raise e
+                    # continue
                 
         except Exception as e:
             logger.error(f"Fatal error in video processing for {connection_id}: {e}")
