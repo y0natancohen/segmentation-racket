@@ -303,8 +303,8 @@ function App() {
           />
           
           <PolygonDisplay
-            width={640}
-            height={360}
+            width={1280}
+            height={720}
             style={{
               border: '2px solid #333',
               borderRadius: '8px'

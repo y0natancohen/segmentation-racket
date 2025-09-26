@@ -9,6 +9,7 @@ export interface PolygonData {
   polygon: number[][];
   timestamp: number;
   frame_shape: number[];
+  original_image_size: number[];
 }
 
 interface PolygonDisplayProps {
@@ -81,9 +82,12 @@ export const PolygonDisplay: React.FC<PolygonDisplayProps> = ({
       ctx.fillStyle = 'rgba(0, 255, 0, 0.3)';
       ctx.lineWidth = 2;
 
-      // Scale polygon to canvas size
-      const scaleX = width / polygonData.frame_shape[1];
-      const scaleY = height / polygonData.frame_shape[0];
+      // Scale polygon to canvas size based on original image dimensions
+      // This allows the polygon to be larger in the window
+      const scaleX = width / polygonData.original_image_size[1];  // width / original_width
+      const scaleY = height / polygonData.original_image_size[0];  // height / original_height
+      
+      console.log(`🎯 Polygon scaling: canvas=${width}x${height}, original=${polygonData.original_image_size[1]}x${polygonData.original_image_size[0]}, scale=${scaleX.toFixed(2)}x${scaleY.toFixed(2)}`);
 
       // Draw polygon
       ctx.beginPath();
@@ -165,6 +169,9 @@ export const PolygonDisplay: React.FC<PolygonDisplayProps> = ({
             fontSize: '12px'
           }}>
             <div>Points: {polygonData.polygon.length}</div>
+            <div>Original: {polygonData.original_image_size[1]}x{polygonData.original_image_size[0]}</div>
+            <div>Canvas: {width}x{height}</div>
+            <div>Scale: {(width / polygonData.original_image_size[1]).toFixed(2)}x{(height / polygonData.original_image_size[0]).toFixed(2)}</div>
             <div>Time: {new Date(polygonData.timestamp * 1000).toLocaleTimeString()}</div>
           </div>
         )}

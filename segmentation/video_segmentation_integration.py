@@ -278,7 +278,8 @@ class VideoSegmentationProcessor:
                         'connection_id': frame_data.get('connection_id', self.connection_id),
                         'polygon': polygon.tolist(),
                         'timestamp': frame_data.get('timestamp', time.time()),
-                        'frame_shape': frame_bgr.shape[:2]  # (height, width)
+                        'frame_shape': frame_bgr.shape[:2],  # (height, width) - processed frame dimensions
+                        'original_image_size': frame_bgr.shape[:2]  # (height, width) - original image dimensions
                     }
                     logger.info(f"✅ Sending polygon data: {len(polygon)} points")
                     logger.debug(f"Polygon data: {polygon_data}")
