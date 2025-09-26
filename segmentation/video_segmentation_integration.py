@@ -6,6 +6,7 @@ to receive frames from WebRTC and send polygon data back to the frontend.
 """
 
 import asyncio
+from collections import deque
 import json
 import logging
 import time
@@ -33,7 +34,7 @@ from segmentation.segmentation import (
 )
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 class VideoSegmentationProcessor:
     """Processes video frames from WebRTC and generates segmentation polygons."""
@@ -52,8 +53,8 @@ class VideoSegmentationProcessor:
         self.device = None
         self.timing_stats = TimingStats()
         self.is_processing = False
-        self.frame_buffer = []
-        self.max_buffer_size = 5
+        self.frame_buffer = deque(maxlen=1)
+        # self.max_buffer_size = 5
         
         # Initialize video system
         self.video_manager = None
@@ -61,6 +62,10 @@ class VideoSegmentationProcessor:
         
         # Initialize recurrent states for RVM model
         self.rec = [None] * 4
+        
+        # Processing rate limiting
+        self.last_process_time = 0
+        self.min_process_interval = 1.0 / 15.0  # Max 15 FPS processing
         
     async def initialize(self):
         """Initialize the segmentation model and video system."""
@@ -117,11 +122,36 @@ class VideoSegmentationProcessor:
             logger.debug("Skipping frame processing: not processing or no model")
             return
         
+        # Add frame to buffer (maxlen=1, so only keeps latest frame)
+        # This ensures we always process the most recent frame and drop older ones
+        # for minimal latency
+        self.frame_buffer.append(frame_data)
+        
+        # Process only the latest frame from buffer
+        if not self.frame_buffer:
+            logger.debug("No frames in buffer")
+            return
+            
+        latest_frame_data = self.frame_buffer[-1]
+        
+        # Process frame asynchronously to avoid blocking WebRTC pipeline
+        asyncio.create_task(self._process_frame_async(latest_frame_data))
+    
+    async def _process_frame_async(self, frame_data: Dict[str, Any]):
+        """Process frame asynchronously to avoid blocking WebRTC pipeline."""
+        # Rate limiting - skip processing if too frequent
+        current_time = time.time()
+        if current_time - self.last_process_time < self.min_process_interval:
+            logger.debug("Skipping frame processing: rate limited")
+            return
+        
+        self.last_process_time = current_time
+        
         try:
-            # Extract frame data
+            # Extract frame data from latest frame
             frame_array = frame_data.get('frame')
             if frame_array is None:
-                logger.debug("No frame data in frame_data")
+                logger.debug("No frame data in latest frame")
                 return
             
             logger.debug(f"Frame data shape: {frame_array.shape}, dtype: {frame_array.dtype}")
@@ -148,10 +178,6 @@ class VideoSegmentationProcessor:
             try:
                 frame_bgr = cv2.cvtColor(frame_array, cv2.COLOR_RGB2BGR)
                 logger.debug(f"Converted to BGR: {frame_bgr.shape}")
-                
-                # Save debug frame image
-                cv2.imwrite('/tmp/debug_frame.jpg', frame_bgr)
-                logger.debug("Saved debug frame to /tmp/debug_frame.jpg")
                 
             except Exception as e:
                 logger.error(f"OpenCV color conversion failed: {e}")
@@ -186,10 +212,6 @@ class VideoSegmentationProcessor:
                 
                 logger.debug(f"Final alpha matte: shape={pha_np.shape}, dtype={pha_np.dtype}, min={pha_np.min()}, max={pha_np.max()}")
                 
-                # Save debug alpha matte image
-                cv2.imwrite('/tmp/debug_alpha_matte.jpg', pha_np)
-                logger.debug("Saved debug alpha matte to /tmp/debug_alpha_matte.jpg")
-                
                 # Generate polygon from alpha matte
                 print(f'self.segmentation_args.polygon_epsilon: {self.segmentation_args.polygon_epsilon}')
                 polygon = matte_to_polygon(
@@ -209,13 +231,13 @@ class VideoSegmentationProcessor:
                 # Send polygon data if callback is provided
                 if self.polygon_callback and polygon is not None:
                     polygon_data = {
-                        'connection_id': self.connection_id,
+                        'connection_id': frame_data.get('connection_id', self.connection_id),
                         'polygon': polygon.tolist(),
-                        'timestamp': time.time(),
+                        'timestamp': frame_data.get('timestamp', time.time()),
                         'frame_shape': frame_bgr.shape[:2]  # (height, width)
                     }
                     logger.info(f"✅ Sending polygon data: {len(polygon)} points")
-                    logger.info(f"Polygon data: {polygon_data}")
+                    logger.debug(f"Polygon data: {polygon_data}")
                     self.polygon_callback(polygon_data)
                 else:
                     logger.debug(f"No polygon data to send: callback={self.polygon_callback is not None}, polygon={polygon is not None}")
