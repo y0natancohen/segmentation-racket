@@ -87,31 +87,38 @@ export const PolygonDisplay: React.FC<PolygonDisplayProps> = ({
       const scaleX = width / polygonData.original_image_size[1];  // width / original_width
       const scaleY = height / polygonData.original_image_size[0];  // height / original_height
       
-      console.log(`🎯 Polygon scaling: canvas=${width}x${height}, original=${polygonData.original_image_size[1]}x${polygonData.original_image_size[0]}, scale=${scaleX.toFixed(2)}x${scaleY.toFixed(2)}`);
+      console.log(`🎯 Polygon scaling: canvas=${width}x${height}, original=${polygonData.original_image_size[1]}x${polygonData.original_image_size[0]}, scale=${scaleX.toFixed(2)}x${scaleY.toFixed(2)}, flipped=true`);
 
-      // Draw polygon
+      // Draw polygon with horizontal flip
       ctx.beginPath();
       polygonData.polygon.forEach((point, index) => {
         const x = point[0] * scaleX;
         const y = point[1] * scaleY;
         
+        // Flip X coordinate horizontally
+        const flippedX = width - x;
+        
         if (index === 0) {
-          ctx.moveTo(x, y);
+          ctx.moveTo(flippedX, y);
         } else {
-          ctx.lineTo(x, y);
+          ctx.lineTo(flippedX, y);
         }
       });
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
 
-      // Draw polygon points
+      // Draw polygon points with horizontal flip
       ctx.fillStyle = '#ff0000';
       polygonData.polygon.forEach(point => {
         const x = point[0] * scaleX;
         const y = point[1] * scaleY;
+        
+        // Flip X coordinate horizontally
+        const flippedX = width - x;
+        
         ctx.beginPath();
-        ctx.arc(x, y, 3, 0, 2 * Math.PI);
+        ctx.arc(flippedX, y, 3, 0, 2 * Math.PI);
         ctx.fill();
       });
     }
@@ -172,6 +179,7 @@ export const PolygonDisplay: React.FC<PolygonDisplayProps> = ({
             <div>Original: {polygonData.original_image_size[1]}x{polygonData.original_image_size[0]}</div>
             <div>Canvas: {width}x{height}</div>
             <div>Scale: {(width / polygonData.original_image_size[1]).toFixed(2)}x{(height / polygonData.original_image_size[0]).toFixed(2)}</div>
+            <div>Flipped: Yes</div>
             <div>Time: {new Date(polygonData.timestamp * 1000).toLocaleTimeString()}</div>
           </div>
         )}

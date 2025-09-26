@@ -298,7 +298,8 @@ function App() {
               height: '360px',
               border: '2px solid #333',
               borderRadius: '8px',
-              backgroundColor: '#222'
+              backgroundColor: '#222',
+              transform: 'scaleX(-1)' // Horizontal flip
             }}
           />
           
