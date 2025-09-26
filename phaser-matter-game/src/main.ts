@@ -1,4 +1,7 @@
 import Phaser from "phaser";
+import { VideoCommunicationManager } from "./VideoCommunicationManager";
+import { PolygonWebSocketManager } from "./PolygonWebSocketManager";
+import type { VideoConfig, PolygonData } from "./types";
 
 // Game dimensions constants - use full window size
 const GAME_WIDTH = window.innerWidth;
@@ -17,24 +20,25 @@ export class MainScene extends Phaser.Scene {
   private platform!: Phaser.GameObjects.Graphics;
   private platformBody!: MatterJS.BodyType;
   
-  // WebSocket connection for polygon data
-  private ws: WebSocket | null = null;
-  private connectionRetryTimer: number = 0;
-  private connectionRetryDelay: number = 2000; // 2 seconds
+  // Video communication and polygon WebSocket managers
+  private videoManager!: VideoCommunicationManager;
+  private polygonManager!: PolygonWebSocketManager;
+  private connectionId: string = 'phaser_game_connection';
   
   // Latest message storage
-  private latestMessage: PolygonMessage | null = null;
+  private latestPolygonData: PolygonData | null = null;
   
   // FPS monitoring
   private fpsText!: Phaser.GameObjects.Text;
   private statusText!: Phaser.GameObjects.Text;
+  private videoStatusText!: Phaser.GameObjects.Text;
   private messageCount: number = 0;
   private lastFpsUpdateTime: number = 0;
   private currentFps: number = 0;
-  private connectionStartTime: number = 0;
   
   // Webcam integration
   private webcamVideo!: Phaser.GameObjects.Video;
+  private videoStream: MediaStream | null = null;
 
   constructor() { super("main"); }
 
@@ -163,7 +167,9 @@ export class MainScene extends Phaser.Scene {
     // Create initial polygon platform (will be updated from WebSocket data)
     this.createPolygonPlatform(this.scale.width / 2, this.scale.height * 0.7);
 
-    this.initializeWebSocketConnection();
+    // Initialize video communication and polygon WebSocket
+    this.initializeVideoCommunication();
+    this.initializePolygonWebSocket();
 
     // Initialize FPS tracking
     this.messageCount = 0;
@@ -181,7 +187,7 @@ export class MainScene extends Phaser.Scene {
     this.fpsText.setDepth(1000); // Ensure it's on top
 
     // Add status display
-    this.statusText = this.add.text(10, 35, "Status: Disconnected", {
+    this.statusText = this.add.text(10, 35, "Polygon: Disconnected", {
       fontSize: '14px',
       color: '#ffffff',
       backgroundColor: '#ff0000',
@@ -189,6 +195,16 @@ export class MainScene extends Phaser.Scene {
     });
     this.statusText.setScrollFactor(0); // Keep text fixed on screen
     this.statusText.setDepth(1000); // Ensure it's on top
+
+    // Add video status display
+    this.videoStatusText = this.add.text(10, 60, "Video: Disconnected", {
+      fontSize: '14px',
+      color: '#ffffff',
+      backgroundColor: '#ff0000',
+      padding: { x: 8, y: 4 }
+    });
+    this.videoStatusText.setScrollFactor(0); // Keep text fixed on screen
+    this.videoStatusText.setDepth(1000); // Ensure it's on top
 
   }
 
@@ -202,9 +218,7 @@ export class MainScene extends Phaser.Scene {
       return true; // Keep in array
     });
 
-    this.updatePlatformFromWebSocket();
-    
-    this.handleConnectionRetry();
+    this.updatePlatformFromPolygonData();
     
     this.updateFpsDisplay();
     
@@ -240,6 +254,11 @@ export class MainScene extends Phaser.Scene {
   private updatePolygonPlatform(message: PolygonMessage): void {
     if (!this.platform) return;
 
+    console.log('=== UPDATING POLYGON PLATFORM ===');
+    console.log('Platform position:', message.position);
+    console.log('Platform vertices:', message.vertices);
+    console.log('Platform rotation:', message.rotation);
+
     // Update graphics position and rotation
     this.platform.setPosition(message.position.x, message.position.y);
     this.platform.setRotation(message.rotation);
@@ -268,6 +287,9 @@ export class MainScene extends Phaser.Scene {
     // Clear and redraw the polygon with new vertices
     this.platform.clear();
     this.drawPolygon(message.vertices);
+    
+    console.log('Platform updated successfully');
+    console.log('=== END PLATFORM UPDATE ===');
   }
   
   private drawPolygon(vertices: { x: number; y: number }[]): void {
@@ -315,63 +337,185 @@ export class MainScene extends Phaser.Scene {
     return ball;
   }
 
-  private initializeWebSocketConnection(): void {
+  private async initializeVideoCommunication(): Promise<void> {
     try {
-      console.log("Connecting to polygon generator WebSocket...");
-      this.ws = new WebSocket("ws://localhost:8765");
+      console.log("Initializing video communication...");
       
-      this.ws.onopen = () => {
-        console.log("Connected to polygon generator");
-        this.connectionRetryTimer = 0; // Reset retry timer
-        this.connectionStartTime = this.time.now;
-        this.updateStatusDisplay();
+      // Create video configuration
+      const videoConfig: VideoConfig = {
+        serverUrl: 'http://localhost:8080',
+        videoConstraints: {
+          width: { ideal: GAME_WIDTH, max: 1920 },
+          height: { ideal: GAME_HEIGHT, max: 1080 },
+          frameRate: { ideal: 30, max: 60 },
+          facingMode: 'user'
+        },
+        dataChannelConfig: {
+          ordered: true,
+          maxRetransmits: 3,
+          protocol: 'metrics'
+        },
+        reconnectInterval: 2000,
+        maxReconnectAttempts: 5
       };
+
+      // Initialize video manager
+      this.videoManager = new VideoCommunicationManager(videoConfig);
       
-      this.ws.onmessage = (event) => {
-        try {
-          const message: PolygonMessage = JSON.parse(event.data);
-          this.latestMessage = message; // Store latest message directly
-          this.messageCount++; // Count received messages
-        } catch (error) {
-          console.error("Failed to parse polygon message:", error);
+      // Set up event handlers
+      this.videoManager.setEventHandlers({
+        onConnectionStateChange: (_connectionId, state) => {
+          console.log(`Video connection state changed: ${state}`);
+          this.updateVideoStatusDisplay();
+        },
+        onStreamReady: async (_connectionId, stream) => {
+          console.log("Video stream ready, setting up webcam background");
+          this.videoStream = stream;
+          await this.setupWebcamBackground(stream);
+        },
+        onIntensityUpdate: (_connectionId, metrics) => {
+          console.log(`Intensity update: ${metrics.avg_intensity.toFixed(1)}`);
+        },
+        onError: (_connectionId, error) => {
+          console.error("Video communication error:", error);
         }
-      };
+      });
+
+      // Create connection and start camera
+      await this.videoManager.createConnection(this.connectionId);
+      const stream = await this.videoManager.startCamera(this.connectionId);
+      await this.videoManager.connect(this.connectionId, stream);
       
-      this.ws.onclose = () => {
-        console.log("WebSocket connection closed");
-        this.ws = null;
-        this.connectionRetryTimer = this.time.now;
-        this.updateStatusDisplay();
-      };
-      
-      this.ws.onerror = (error) => {
-        console.error("WebSocket error:", error);
-        this.ws = null;
-        this.connectionRetryTimer = this.time.now;
-        this.updateStatusDisplay();
-      };
-      
+      console.log("Video communication initialized successfully");
     } catch (error) {
-      console.error("Failed to initialize WebSocket:", error);
-      this.connectionRetryTimer = this.time.now;
+      console.error("Failed to initialize video communication:", error);
     }
   }
 
-  private updatePlatformFromWebSocket(): void {
-    if (this.latestMessage) {
-      // Update polygon platform with full message data
-      this.updatePolygonPlatform(this.latestMessage);
+  private async initializePolygonWebSocket(): Promise<void> {
+    try {
+      console.log("Initializing polygon WebSocket...");
+      
+      // Initialize polygon manager
+      this.polygonManager = new PolygonWebSocketManager('ws://localhost:8080/polygon');
+      
+      // Set up event handlers
+      this.polygonManager.setEventHandlers({
+        onPolygonData: (data) => {
+          console.log("Polygon data received:", data);
+          this.latestPolygonData = data;
+          this.messageCount++;
+        },
+        onConnectionStateChange: (connected) => {
+          console.log(`Polygon WebSocket ${connected ? 'connected' : 'disconnected'}`);
+        this.updateStatusDisplay();
+        },
+        onError: (error) => {
+          console.error("Polygon WebSocket error:", error);
+        }
+      });
+
+      // Connect to polygon WebSocket
+      await this.polygonManager.connect();
+      
+      console.log("Polygon WebSocket initialized successfully");
+    } catch (error) {
+      console.error("Failed to initialize polygon WebSocket:", error);
     }
   }
 
-  private handleConnectionRetry(): void {
-    if (!this.ws && this.connectionRetryTimer > 0) {
-      const timeSinceRetry = this.time.now - this.connectionRetryTimer;
-      if (timeSinceRetry >= this.connectionRetryDelay) {
-        console.log("Retrying WebSocket connection...");
-        this.initializeWebSocketConnection();
-      }
+  private updatePlatformFromPolygonData(): void {
+    if (this.latestPolygonData) {
+      // Convert polygon data to PolygonMessage format
+      const polygonMessage = this.convertPolygonDataToMessage(this.latestPolygonData);
+      this.updatePolygonPlatform(polygonMessage);
     }
+  }
+
+  private convertPolygonDataToMessage(polygonData: PolygonData): PolygonMessage {
+    // Get the original image dimensions from the polygon data
+    const originalWidth = polygonData.original_image_size[1]; // width
+    const originalHeight = polygonData.original_image_size[0]; // height
+    
+    // Get current game/video dimensions
+    const gameWidth = this.scale.width;
+    const gameHeight = this.scale.height;
+    
+    // Get video position and scale information
+    const videoX = this.webcamVideo ? this.webcamVideo.x : 0;
+    const videoY = this.webcamVideo ? this.webcamVideo.y : 0;
+    const videoScaleX = this.webcamVideo ? this.webcamVideo.scaleX : 1;
+    const videoScaleY = this.webcamVideo ? this.webcamVideo.scaleY : 1;
+    const videoDisplayWidth = this.webcamVideo ? this.webcamVideo.displayWidth : gameWidth;
+    const videoDisplayHeight = this.webcamVideo ? this.webcamVideo.displayHeight : gameHeight;
+    
+    console.log('=== POLYGON COORDINATE TRANSFORMATION ===');
+    console.log(`Original image size: ${originalWidth}x${originalHeight}`);
+    console.log(`Game dimensions: ${gameWidth}x${gameHeight}`);
+    console.log(`Video position: (${videoX}, ${videoY})`);
+    console.log(`Video scale: ${videoScaleX}x${videoScaleY}`);
+    console.log(`Video display size: ${videoDisplayWidth}x${videoDisplayHeight}`);
+    console.log(`Raw polygon points:`, polygonData.polygon);
+    
+    // Calculate scaling factors based on video display size vs original image size
+    const scaleX = videoDisplayWidth / originalWidth;
+    const scaleY = videoDisplayHeight / originalHeight;
+    
+    console.log(`Calculated scale factors: ${scaleX.toFixed(3)}x${scaleY.toFixed(3)}`);
+    
+    // Scale the polygon vertices to match the video display dimensions (NO video offset yet)
+    const scaledVertices = polygonData.polygon.map((point, index) => {
+      const scaledX = point[0] * scaleX;
+      const scaledY = point[1] * scaleY;
+      
+      console.log(`Point ${index}: (${point[0]}, ${point[1]}) -> scaled: (${scaledX.toFixed(1)}, ${scaledY.toFixed(1)})`);
+      
+      return {
+        x: scaledX,
+        y: scaledY
+      };
+    });
+    
+    // Calculate the bounding box of the polygon to find top-left corner
+    const minX = Math.min(...scaledVertices.map(v => v.x));
+    const minY = Math.min(...scaledVertices.map(v => v.y));
+    const maxX = Math.max(...scaledVertices.map(v => v.x));
+    const maxY = Math.max(...scaledVertices.map(v => v.y));
+    
+    // Calculate polygon dimensions
+    const polygonWidth = maxX - minX;
+    const polygonHeight = maxY - minY;
+    
+    // Calculate the center of the detected object in the video
+    const detectedCenterX = minX + (polygonWidth / 2);
+    const detectedCenterY = minY + (polygonHeight / 2);
+    
+    // Position the polygon center at the detected object center in video coordinates
+    const centerX = detectedCenterX + videoX;
+    const centerY = detectedCenterY + videoY;
+    
+    // Convert vertices to be RELATIVE to the polygon center (for proper centering)
+    const relativeVertices = scaledVertices.map(vertex => ({
+      x: vertex.x - detectedCenterX,
+      y: vertex.y - detectedCenterY
+    }));
+    
+    console.log(`Polygon bounding box: (${minX.toFixed(1)}, ${minY.toFixed(1)}) to (${maxX.toFixed(1)}, ${maxY.toFixed(1)})`);
+    console.log(`Polygon dimensions: ${polygonWidth.toFixed(1)} x ${polygonHeight.toFixed(1)}`);
+    console.log(`Detected object center: (${detectedCenterX.toFixed(1)}, ${detectedCenterY.toFixed(1)})`);
+    console.log(`Video position: (${videoX.toFixed(1)}, ${videoY.toFixed(1)})`);
+    console.log(`Final polygon position: (${centerX.toFixed(1)}, ${centerY.toFixed(1)})`);
+    console.log(`Relative vertices (first 3):`, relativeVertices.slice(0, 3));
+    
+    console.log(`Final polygon center: (${centerX.toFixed(1)}, ${centerY.toFixed(1)})`);
+    console.log(`Final vertices (relative):`, relativeVertices);
+    console.log('=== END POLYGON TRANSFORMATION ===');
+    
+    return {
+      position: { x: centerX, y: centerY },
+      vertices: relativeVertices, // Use relative vertices!
+      rotation: 0 // Could be calculated from polygon orientation if needed
+    };
   }
 
   private updateFpsDisplay(): void {
@@ -392,38 +536,51 @@ export class MainScene extends Phaser.Scene {
   }
 
   private updateStatusDisplay(): void {
-    if (this.ws) {
-      const connectionDuration = Math.floor((this.time.now - this.connectionStartTime) / 1000);
-      const hasData = this.latestMessage ? 'Yes' : 'No';
-      this.statusText.setText(`Status: Connected (${connectionDuration}s) | Data: ${hasData}`);
+    if (this.polygonManager && this.polygonManager.isConnected()) {
+      const hasData = this.latestPolygonData ? 'Yes' : 'No';
+      this.statusText.setText(`Polygon: Connected | Data: ${hasData}`);
       this.statusText.setStyle({ color: '#000000', backgroundColor: '#00ff00' });
     } else {
-      this.statusText.setText("Status: Disconnected");
+      this.statusText.setText("Polygon: Disconnected");
       this.statusText.setStyle({ color: '#ffffff', backgroundColor: '#ff0000' });
     }
   }
 
-  private async setupWebcamBackground(): Promise<void> {
+  private updateVideoStatusDisplay(): void {
+    if (this.videoManager && this.videoManager.isConnectionActive(this.connectionId)) {
+      this.videoStatusText.setText("Video: Connected");
+      this.videoStatusText.setStyle({ color: '#000000', backgroundColor: '#00ff00' });
+    } else {
+      this.videoStatusText.setText("Video: Disconnected");
+      this.videoStatusText.setStyle({ color: '#ffffff', backgroundColor: '#ff0000' });
+    }
+  }
+
+  private async setupWebcamBackground(stream?: MediaStream): Promise<void> {
     try {
-      console.log("Requesting webcam access...");
+      console.log("Setting up webcam background...");
       
-      // Request webcam access
-      const stream = await navigator.mediaDevices.getUserMedia({ 
+      // Use provided stream or request new one
+      let videoStream = stream;
+      if (!videoStream) {
+        console.log("Requesting webcam access...");
+        videoStream = await navigator.mediaDevices.getUserMedia({ 
         video: { 
           width: { ideal: GAME_WIDTH },
           height: { ideal: GAME_HEIGHT },
           facingMode: 'user' // Front-facing camera
         } 
       });
+      }
       
-      console.log("Webcam stream obtained:", stream);
+      console.log("Webcam stream obtained:", videoStream);
       console.log("About to create video object...");
       
       // Create Phaser Video Game Object
       this.webcamVideo = this.add.video(0, 0); // Will be positioned by configureVideoLayout
       
       // Load the media stream into the Video object
-      this.webcamVideo.loadMediaStream(stream);
+      this.webcamVideo.loadMediaStream(videoStream);
       
       // Play the video
       this.webcamVideo.play();
@@ -481,6 +638,7 @@ export class MainScene extends Phaser.Scene {
     this.resizeVideoToGameSize(gameWidth, gameHeight);
     
     // Use multiple logging methods to ensure visibility
+    console.log('=== VIDEO CONFIGURATION DEBUG ===');
     console.log('Video configured - Position:', this.webcamVideo.x, this.webcamVideo.y);
     console.log('Video configured - Size:', this.webcamVideo.displayWidth, this.webcamVideo.displayHeight);
     console.log('Video configured - Depth:', this.webcamVideo.depth);
@@ -488,6 +646,9 @@ export class MainScene extends Phaser.Scene {
     console.log('Video is playing:', this.webcamVideo.isPlaying());
     console.log('Video scale:', this.webcamVideo.scaleX, this.webcamVideo.scaleY);
     console.log('Video width/height:', this.webcamVideo.width, this.webcamVideo.height);
+    console.log('Video origin:', this.webcamVideo.originX, this.webcamVideo.originY);
+    console.log('Video bounds:', this.webcamVideo.getBounds());
+    console.log('=== END VIDEO CONFIGURATION ===');
     
     // Try DOM-based logging as well
     const debugDiv = document.createElement('div');
@@ -562,16 +723,25 @@ export class MainScene extends Phaser.Scene {
   }
 
   shutdown(): void {
-    // Clean up WebSocket connection
-    if (this.ws) {
-      this.ws.close();
-      this.ws = null;
+    // Clean up video communication
+    if (this.videoManager) {
+      this.videoManager.cleanup();
+    }
+    
+    // Clean up polygon WebSocket
+    if (this.polygonManager) {
+      this.polygonManager.disconnect();
     }
     
     // Clean up webcam
     if (this.webcamVideo) {
       this.webcamVideo.stop();
       this.webcamVideo.destroy();
+    }
+    
+    // Clean up video stream
+    if (this.videoStream) {
+      this.videoStream.getTracks().forEach(track => track.stop());
     }
   }
 }
