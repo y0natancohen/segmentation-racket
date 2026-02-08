@@ -21,7 +21,6 @@ import json
 import logging
 import os
 import signal
-import sys
 import time
 import tracemalloc
 from concurrent.futures import ThreadPoolExecutor
@@ -31,12 +30,8 @@ import cv2
 import numpy as np
 import torch
 
-# Add RVM submodule to path so `from model import ...` works
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "segmentation", "rvm"))
-
-from model import MattingNetwork                                  # noqa: E402
-from segmentation.segmentation import matte_to_polygon, TimingStats  # noqa: E402
-
+from segmentation.rvm.model import MattingNetwork
+from segmentation.segmentation import matte_to_polygon, TimingStats
 import websockets
 
 # ---------------------------------------------------------------------------
@@ -218,7 +213,7 @@ class SegmentationSession:
 # WebSocket handler
 # ---------------------------------------------------------------------------
 
-async def handle_client(websocket, path, model, device, fp16, dsr,
+async def handle_client(websocket, model, device, fp16, dsr,
                         polygon_threshold, polygon_min_area,
                         polygon_epsilon, executor):
     """Handle a single WebSocket client connection."""
@@ -335,18 +330,9 @@ async def run_server(args):
     # Start periodic memory logging
     asyncio.create_task(_log_memory_periodically(30.0))
 
-    # Wrap handler with bound args
-    # Handle both old API (websocket, path) and new API (websocket only)
-    # websockets 11.0+ passes only websocket, older versions pass (websocket, path)
-    async def handler(websocket, *handler_args):
-        # In websockets 11.0+, path is accessed via websocket.path
-        # In older versions, path is passed as second positional argument
-        if handler_args:
-            path = handler_args[0]
-        else:
-            path = getattr(websocket, 'path', '/')
+    async def handler(websocket, *_handler_args):
         await handle_client(
-            websocket, path, model, device, args.fp16, args.dsr,
+            websocket, model, device, args.fp16, args.dsr,
             args.polygon_threshold, args.polygon_min_area,
             args.polygon_epsilon, executor,
         )

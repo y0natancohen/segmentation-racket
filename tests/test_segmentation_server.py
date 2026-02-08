@@ -100,8 +100,8 @@ async def test_ws_round_trip(sample_jpeg_bytes):
     model = load_model(model_path, device, fp16=False)
     executor = ThreadPoolExecutor(max_workers=1)
 
-    async def handler(ws, path):
-        await handle_client(ws, path, model, device, False, 0.25, 0.5, 500, 0.01, executor)
+    async def handler(ws, *_args):
+        await handle_client(ws, model, device, False, 0.25, 0.5, 500, 0.01, executor)
 
     server = await websockets.serve(handler, "localhost", 0)
     try:

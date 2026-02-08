@@ -176,7 +176,7 @@ def get_polygon(shape_name: str, t: float, cycle_period: float = 5.0) -> Tuple[L
 # WebSocket handler
 # ---------------------------------------------------------------------------
 
-async def handle_client(websocket, path, shape_name: str, fps: float, cycle_period: float):
+async def handle_client(websocket, shape_name: str, fps: float, cycle_period: float):
     """Handle a single browser client."""
     addr = websocket.remote_address
     logger.info("Client connected: %s (shape=%s, fps=%.1f)", addr, shape_name, fps)
@@ -258,8 +258,8 @@ async def run_server(args):
     for sig in (signal.SIGINT, signal.SIGTERM):
         asyncio.get_running_loop().add_signal_handler(sig, _shutdown, sig)
 
-    async def handler(websocket, path):
-        await handle_client(websocket, path, args.shape, args.fps, args.cycle_period)
+    async def handler(websocket, *_args):
+        await handle_client(websocket, args.shape, args.fps, args.cycle_period)
 
     server = await websockets.serve(
         handler, args.host, args.port,
