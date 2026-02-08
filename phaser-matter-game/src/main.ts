@@ -32,9 +32,17 @@ export class MainScene extends Phaser.Scene {
   /** The raw HTMLVideoElement — needed by GameWebSocket for frame capture. */
   private rawVideoElement: HTMLVideoElement | null = null;
 
+  // Captured-frame background (synced to polygon)
+  private bgCanvasTexture: Phaser.Textures.CanvasTexture | null = null;
+  private bgImage: Phaser.GameObjects.Image | null = null;
+
   // Networking
   private gameWs!: GameWebSocket;
   private latestPolygonData: PolygonData | null = null;
+
+  // Timestamp correlation — displayed frame & polygon must share the same ts
+  private _displayedFrameTs = 0;
+  private _displayedPolygonTs = 0;
 
   // HUD
   private hudText!: Phaser.GameObjects.Text;
@@ -113,6 +121,7 @@ export class MainScene extends Phaser.Scene {
       this.matter.world.setBounds(0, 0, width, height);
       this.cameras.main.setSize(width, height);
       this.fitVideoToGame(width, height);
+      this._fitBgToGame(width, height);
     });
   }
 
@@ -205,6 +214,46 @@ export class MainScene extends Phaser.Scene {
     this.webcamVideo.setOrigin(0.5, 0.5);
   }
 
+  // ---- captured-frame background ------------------------------------------
+
+  private _initBackgroundTexture(cw: number, ch: number): void {
+    this.bgCanvasTexture = this.textures.createCanvas("webcam_bg", cw, ch);
+    this.bgImage = this.add.image(0, 0, "webcam_bg");
+    this.bgImage.setOrigin(0.5, 0.5);
+    this.bgImage.setDepth(-1); // behind everything including the live video
+    this._fitBgToGame(this.scale.width, this.scale.height);
+
+    // Hide the live video — we'll show the captured frame instead
+    if (this.webcamVideo) {
+      this.webcamVideo.setVisible(false);
+    }
+    console.debug("[Main] Background canvas texture initialised (%dx%d)", cw, ch);
+  }
+
+  private _fitBgToGame(w: number, h: number): void {
+    if (!this.bgImage || !this.bgCanvasTexture) return;
+    const cw = this.bgCanvasTexture.width;
+    const ch = this.bgCanvasTexture.height;
+    const scale = Math.max(w / cw, h / ch);
+    this.bgImage.setScale(scale);
+    this.bgImage.setPosition(w / 2, h / 2);
+  }
+
+  /** Update the background texture from a correlated ImageData.
+   *  Called atomically with polygon arrival — only displays a frame whose
+   *  timestamp matches the polygon's frame_timestamp. */
+  private _updateBackgroundFromImageData(imageData: ImageData): void {
+    // Lazily create the background texture on first polygon arrival
+    if (!this.bgCanvasTexture) {
+      this._initBackgroundTexture(imageData.width, imageData.height);
+    }
+    if (!this.bgCanvasTexture) return;
+
+    const ctx = this.bgCanvasTexture.getContext();
+    ctx.putImageData(imageData, 0, 0);
+    this.bgCanvasTexture.refresh();
+  }
+
   // ---- networking ---------------------------------------------------------
 
   private initializeWebSocket(): void {
@@ -219,9 +268,21 @@ export class MainScene extends Phaser.Scene {
     });
 
     this.gameWs.setEventHandlers({
-      onPolygonData: (data) => {
-        // Single-slot: always overwrite with latest
-        this.latestPolygonData = data;
+      onPolygonData: (data, frameImageData) => {
+        if (frameImageData) {
+          // Matched pair: update background + polygon atomically
+          this.latestPolygonData = data;
+          this._updateBackgroundFromImageData(frameImageData);
+          this._displayedFrameTs = data.frame_timestamp ?? 0;
+          this._displayedPolygonTs = data.frame_timestamp ?? 0;
+        } else {
+          // No matching frame found — still apply polygon but log warning
+          this.latestPolygonData = data;
+          console.warn(
+            "[Main] Polygon arrived but no matching frame (ts=%d, store miss)",
+            data.frame_timestamp ?? 0,
+          );
+        }
       },
       onConnectionStateChange: (connected) => {
         console.log(`[Main] Segmentation server ${connected ? "connected" : "disconnected"}`);
@@ -266,10 +327,12 @@ export class MainScene extends Phaser.Scene {
     const gameH = this.scale.height;
 
     // Video display dimensions (used for coordinate mapping)
-    const displayW = this.webcamVideo ? this.webcamVideo.displayWidth : gameW;
-    const displayH = this.webcamVideo ? this.webcamVideo.displayHeight : gameH;
-    const videoX = this.webcamVideo ? this.webcamVideo.x : gameW / 2;
-    const videoY = this.webcamVideo ? this.webcamVideo.y : gameH / 2;
+    // Prefer bgImage (captured frame, synced to polygon) over live video
+    const displaySource = this.bgImage ?? this.webcamVideo;
+    const displayW = displaySource ? displaySource.displayWidth : gameW;
+    const displayH = displaySource ? displaySource.displayHeight : gameH;
+    const videoX = displaySource ? displaySource.x : gameW / 2;
+    const videoY = displaySource ? displaySource.y : gameH / 2;
 
     const scaleX = displayW / originalW;
     const scaleY = displayH / originalH;
@@ -434,12 +497,15 @@ export class MainScene extends Phaser.Scene {
     if (ws) {
       const t = ws.detailedTimings;
       const netHalf = t.network_ms / 2;
+      const tsDiff = this._displayedFrameTs - this._displayedPolygonTs;
       text +=
         `--- Latency Breakdown (avg ms, 60-frame window) ---\n` +
         `Capture: ${f(t.capture_ms)} (draw:${f(t.capture_draw_ms)} enc:${f(t.capture_encode_ms)})\n` +
         `Net Up:  ~${f(netHalf)} | Decode: ${f(t.server_decode_ms)} | Infer: ${f(t.server_inference_ms)}\n` +
         `Polygon: ${f(t.server_polygon_ms)} | Net Down: ~${f(netHalf)} | Apply: ${f(t.apply_ms)}\n` +
-        `RTT:     ${f(t.rtt_ms)} | Srv Total: ${f(t.server_total_ms)} | Overall: ${f(t.overall_ms)}`;
+        `RTT:     ${f(t.rtt_ms)} | Srv Total: ${f(t.server_total_ms)} | Overall: ${f(t.overall_ms)}\n` +
+        `--- Frame-Polygon Sync ---\n` +
+        `Frame TS:  ${this._displayedFrameTs} | Poly TS: ${this._displayedPolygonTs} | Δ: ${tsDiff}ms`;
     }
 
     this.hudText.setText(text);
@@ -482,6 +548,12 @@ export class MainScene extends Phaser.Scene {
     }
     if (this.videoStream) {
       this.videoStream.getTracks().forEach((t) => t.stop());
+    }
+    if (this.bgImage) {
+      this.bgImage.destroy();
+    }
+    if (this.bgCanvasTexture) {
+      this.bgCanvasTexture.destroy();
     }
   }
 }

@@ -24,6 +24,9 @@ export type PolygonData = {
   original_image_size: number[];
   /** Per-frame timing breakdown from the server */
   server_timings?: ServerTimings;
+  /** Integer timestamp (ms since epoch) of the captured frame this polygon was
+   *  computed from. Echoed by the server — used to correlate frame + polygon. */
+  frame_timestamp?: number;
 };
 
 /**
@@ -50,7 +53,10 @@ export type GameWebSocketConfig = {
  * Events emitted by GameWebSocket.
  */
 export type GameWebSocketEvents = {
-  onPolygonData?: (data: PolygonData) => void;
+  /** Called when a polygon + its matching frame arrive.
+   *  `frameImageData` is the exact ImageData of the captured frame (or null if
+   *  the frame could not be correlated). */
+  onPolygonData?: (data: PolygonData, frameImageData: ImageData | null) => void;
   onConnectionStateChange?: (connected: boolean) => void;
   onError?: (error: Error) => void;
   onFrameSent?: () => void;

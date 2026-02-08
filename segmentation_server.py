@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import signal
+import struct
 import time
 import tracemalloc
 from concurrent.futures import ThreadPoolExecutor
@@ -131,7 +132,7 @@ class SegmentationSession:
         self.last_stats_time = time.time()
 
     # ---- runs in thread pool (blocking) ----
-    def process_frame(self, jpeg_bytes: bytes) -> Optional[dict]:
+    def process_frame(self, jpeg_bytes: bytes, frame_timestamp: float = 0) -> Optional[dict]:
         """Decode JPEG, run segmentation, return polygon dict or None."""
         t0 = time.time()
 
@@ -235,6 +236,7 @@ class SegmentationSession:
             "polygon": polygon.tolist(),
             "timestamp": time.time(),
             "original_image_size": [h, w],
+            "frame_timestamp": int(frame_timestamp),
             "server_timings": {
                 "decode_ms": round(decode_ms, 2),
                 "inference_ms": round(infer_ms, 2),
@@ -266,15 +268,16 @@ async def handle_client(websocket, model, device, fp16, dsr,
     loop = asyncio.get_running_loop()
 
     # Single-slot queue: putting a new frame evicts any unconsumed one.
-    frame_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=1)
+    # Each entry is (frame_timestamp, jpeg_bytes).
+    frame_queue: asyncio.Queue[tuple] = asyncio.Queue(maxsize=1)
 
     async def worker():
         """Persistent worker — consumes from the queue and sends results."""
         while True:
-            frame_bytes = await frame_queue.get()
+            frame_ts, jpeg_bytes = await frame_queue.get()
             try:
                 result = await loop.run_in_executor(
-                    executor, session.process_frame, frame_bytes
+                    executor, session.process_frame, jpeg_bytes, frame_ts
                 )
                 if result is not None:
                     msg = json.dumps(result)
@@ -296,7 +299,15 @@ async def handle_client(websocket, model, device, fp16, dsr,
         async for message in websocket:
             if isinstance(message, (bytes, bytearray)):
                 frames_received += 1
-                frame = bytes(message)
+                raw = bytes(message)
+
+                # Extract 8-byte Float64 big-endian timestamp header
+                if len(raw) > 8:
+                    frame_ts = struct.unpack('>d', raw[:8])[0]
+                    jpeg_bytes = raw[8:]
+                else:
+                    frame_ts = 0.0
+                    jpeg_bytes = raw
 
                 # Single-slot: evict stale frame if queue is full
                 if frame_queue.full():
@@ -310,10 +321,10 @@ async def handle_client(websocket, model, device, fp16, dsr,
                     except asyncio.QueueEmpty:
                         pass
 
-                frame_queue.put_nowait(frame)
+                frame_queue.put_nowait((frame_ts, jpeg_bytes))
                 logger.debug(
-                    "[ws] Frame queued (%d bytes) — received=%d from %s",
-                    len(frame), frames_received, addr,
+                    "[ws] Frame queued (%d bytes, ts=%.0f) — received=%d from %s",
+                    len(jpeg_bytes), frame_ts, frames_received, addr,
                 )
             elif isinstance(message, str):
                 logger.debug("Text message from client: %s", message[:120])

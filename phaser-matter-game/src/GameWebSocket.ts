@@ -64,13 +64,17 @@ export class GameWebSocket {
   private intentionallyClosed = false;
 
   // Frame capture
-  private captureCanvas: OffscreenCanvas;
+  private _captureCanvas: OffscreenCanvas;
   private captureCtx: OffscreenCanvasRenderingContext2D;
   private captureInterval: ReturnType<typeof setInterval> | null = null;
+
+  /** Frame store: maps frame_timestamp (ms) → captured ImageData.
+   *  When a polygon arrives, we look up the exact frame it was computed from. */
+  private _frameStore: Map<number, ImageData> = new Map();
+  /** Max frames to keep in the store before evicting oldest. */
+  private static readonly MAX_FRAME_STORE = 30;
   /** requestVideoFrameCallback handle (0 = not active) */
   private rvfcHandle = 0;
-  /** Whether we're using requestVideoFrameCallback (vs setInterval fallback) */
-  private useRvfc = false;
   private isSending = false;
   /** Reference to the video element for rvfc re-registration */
   private _captureVideo: HTMLVideoElement | null = null;
@@ -89,6 +93,10 @@ export class GameWebSocket {
   /** Timestamp (performance.now) when the last frame was sent */
   private _lastFrameSendTime = 0;
 
+  // Displayed frame/polygon timestamps (for HUD)
+  private _displayedFrameTs = 0;
+  private _displayedPolygonTs = 0;
+
   // Rolling averages for detailed timing (60-sample window)
   private _avgCapture = new RollingAverage(60);
   private _avgCaptureDraw = new RollingAverage(60);
@@ -102,11 +110,11 @@ export class GameWebSocket {
 
   constructor(config?: Partial<GameWebSocketConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
-    this.captureCanvas = new OffscreenCanvas(
+    this._captureCanvas = new OffscreenCanvas(
       this.config.captureWidth,
       this.config.captureHeight,
     );
-    this.captureCtx = this.captureCanvas.getContext("2d")!;
+    this.captureCtx = this._captureCanvas.getContext("2d")!;
     console.debug(
       "[GameWS] Created with config:",
       JSON.stringify(this.config),
@@ -147,7 +155,6 @@ export class GameWebSocket {
 
     // Prefer requestVideoFrameCallback for frame-accurate pacing
     if ("requestVideoFrameCallback" in video) {
-      this.useRvfc = true;
       console.debug(
         "[GameWS] Starting frame capture via requestVideoFrameCallback, capture size=%dx%d",
         this.config.captureWidth,
@@ -156,7 +163,6 @@ export class GameWebSocket {
       this._rvfcLoop(video);
     } else {
       // Fallback to setInterval
-      this.useRvfc = false;
       const intervalMs = 1000 / this.config.captureRate;
       console.debug(
         "[GameWS] Starting frame capture at %.1f fps (interval=%dms, setInterval fallback), capture size=%dx%d",
@@ -253,6 +259,17 @@ export class GameWebSocket {
     this._avgApply.push(ms);
   }
 
+  /** Expose the capture canvas (current capture, may be newer than what was sent). */
+  get captureCanvas(): OffscreenCanvas {
+    return this._captureCanvas;
+  }
+
+  /** Frame timestamp (ms epoch) of the currently displayed frame. */
+  get displayedFrameTs(): number { return this._displayedFrameTs; }
+
+  /** Frame timestamp (ms epoch) echoed by the server for the displayed polygon. */
+  get displayedPolygonTs(): number { return this._displayedPolygonTs; }
+
   // ---- internals ----------------------------------------------------------
 
   private _connect(): void {
@@ -326,14 +343,31 @@ export class GameWebSocket {
         this._avgServerTotal.push(st.total_ms);
       }
 
+      // ---- Frame-polygon correlation via timestamp ----
+      const frameTs = parsed.frame_timestamp ?? 0;
+      let frameImageData: ImageData | null = null;
+      if (frameTs && this._frameStore.has(frameTs)) {
+        frameImageData = this._frameStore.get(frameTs)!;
+        this._frameStore.delete(frameTs);
+      }
+      // Evict stale entries older than 2 seconds
+      const cutoff = Date.now() - 2000;
+      for (const key of this._frameStore.keys()) {
+        if (key < cutoff) this._frameStore.delete(key);
+      }
+      // Track displayed timestamps
+      this._displayedFrameTs = frameTs;
+      this._displayedPolygonTs = frameTs;
+
       console.debug(
-        "[GameWS] Polygon received: %d vertices, image_size=[%s], RTT=%.0fms",
+        "[GameWS] Polygon received: %d vertices, frame_ts=%d, matched=%s, RTT=%.0fms",
         parsed.polygon?.length ?? 0,
-        parsed.original_image_size?.join("x") ?? "?",
+        frameTs,
+        frameImageData !== null,
         this._lastRoundTripMs,
       );
 
-      this.events.onPolygonData?.(parsed);
+      this.events.onPolygonData?.(parsed, frameImageData);
     } catch (e) {
       console.warn("[GameWS] Failed to parse polygon JSON:", e, "raw:", data.slice(0, 200));
       this.events.onError?.(new Error("Failed to parse polygon JSON"));
@@ -364,6 +398,7 @@ export class GameWebSocket {
     this.isSending = true;
     try {
       const captureStart = performance.now();
+      const frameTs = Date.now(); // Integer ms — unique ID for this frame
 
       // Draw video frame to offscreen canvas (downscaled)
       this.captureCtx.drawImage(
@@ -377,14 +412,24 @@ export class GameWebSocket {
       const drawMs = drawEnd - captureStart;
       this._avgCaptureDraw.push(drawMs);
 
+      // Snapshot frame pixels for later correlation with the polygon
+      const imageData = this.captureCtx.getImageData(
+        0, 0, this.config.captureWidth, this.config.captureHeight,
+      );
+      this._frameStore.set(frameTs, imageData);
+      // Evict oldest if store is too large
+      if (this._frameStore.size > GameWebSocket.MAX_FRAME_STORE) {
+        const oldest = this._frameStore.keys().next().value;
+        if (oldest !== undefined) this._frameStore.delete(oldest);
+      }
+
       // Encode as JPEG blob
-      const blob = await this.captureCanvas.convertToBlob({
+      const blob = await this._captureCanvas.convertToBlob({
         type: "image/jpeg",
         quality: this.config.jpegQuality,
       });
 
-      // Send binary
-      const buffer = await blob.arrayBuffer();
+      const jpegBuffer = await blob.arrayBuffer();
 
       const encodeMs = performance.now() - drawEnd;
       this._avgCaptureEncode.push(encodeMs);
@@ -393,12 +438,20 @@ export class GameWebSocket {
       this._avgCapture.push(captureMs);
 
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(buffer);
+        // Prepend 8-byte Float64 timestamp header to JPEG data
+        const header = new ArrayBuffer(8);
+        new DataView(header).setFloat64(0, frameTs);
+        const combined = new Uint8Array(8 + jpegBuffer.byteLength);
+        combined.set(new Uint8Array(header), 0);
+        combined.set(new Uint8Array(jpegBuffer), 8);
+
+        this.ws.send(combined.buffer);
         this._frameSendCount++;
         this._lastFrameSendTime = performance.now();
         console.debug(
-          "[GameWS] Frame sent: %d bytes JPEG (video %dx%d -> %dx%d) capture=%.1fms",
-          buffer.byteLength,
+          "[GameWS] Frame sent: ts=%d, %d bytes JPEG (video %dx%d -> %dx%d) capture=%.1fms",
+          frameTs,
+          jpegBuffer.byteLength,
           video.videoWidth,
           video.videoHeight,
           this.config.captureWidth,
