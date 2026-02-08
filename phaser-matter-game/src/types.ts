@@ -1,70 +1,55 @@
-export type IntensityMetrics = {
-  ts: number;
-  intensity: number; // 0-255
-  intensity_norm: number; // 0.0-1.0
-  avg_intensity: number; // 0-255 average
-  avg_intensity_norm: number; // 0.0-1.0 average
-  frame_count: number; // number of frames averaged
-};
-
-export type ConnectionStats = {
-  outboundFps: number;
-  outboundBitrate: number;
-  inboundFps: number;
-  messagesPerSecond: number;
-};
-
-export type VideoConstraints = {
-  width: { ideal: number; max: number };
-  height: { ideal: number; max: number };
-  frameRate: { ideal: number; max: number };
-  facingMode: 'user' | 'environment';
-};
-
-export type DataChannelConfig = {
-  ordered: boolean;
-  maxRetransmits: number;
-  protocol: string;
-};
-
-export type SignalingRequest = {
-  sdp: string;
-  type: 'offer';
-};
-
-export type SignalingResponse = {
-  sdp: string;
-  type: 'answer';
-};
-
+/**
+ * Polygon data received from the Python segmentation server.
+ */
 export type PolygonData = {
-  connection_id: string;
+  /** Polygon vertices as [[x,y], [x,y], ...] in original image coordinates */
   polygon: number[][];
+  /** Server-side timestamp (seconds since epoch) */
   timestamp: number;
-  frame_shape: number[];
+  /** [height, width] of the image the polygon was extracted from */
   original_image_size: number[];
 };
 
-export type VideoConfig = {
+/**
+ * Configuration for the GameWebSocket connection.
+ */
+export type GameWebSocketConfig = {
+  /** WebSocket server URL, e.g. "ws://localhost:8765" */
   serverUrl: string;
-  videoConstraints: VideoConstraints;
-  dataChannelConfig: DataChannelConfig;
-  reconnectInterval: number;
+  /** JPEG quality for frame capture (0.0 – 1.0) */
+  jpegQuality: number;
+  /** Frame capture/send rate in fps */
+  captureRate: number;
+  /** Width to downscale captured frames to before sending */
+  captureWidth: number;
+  /** Height to downscale captured frames to before sending */
+  captureHeight: number;
+  /** Reconnect delay in ms */
+  reconnectDelay: number;
+  /** Maximum reconnect attempts (0 = unlimited) */
   maxReconnectAttempts: number;
 };
 
-export type VideoConnection = {
-  id: string;
-  isConnected: boolean;
-  isStreaming: boolean;
-  stats: ConnectionStats;
-  lastIntensity: IntensityMetrics | null;
+/**
+ * Events emitted by GameWebSocket.
+ */
+export type GameWebSocketEvents = {
+  onPolygonData?: (data: PolygonData) => void;
+  onConnectionStateChange?: (connected: boolean) => void;
+  onError?: (error: Error) => void;
+  onFrameSent?: () => void;
 };
 
-export type VideoConnectionEvents = {
-  onConnectionStateChange?: (connectionId: string, state: RTCPeerConnectionState) => void;
-  onIntensityUpdate?: (connectionId: string, metrics: IntensityMetrics) => void;
-  onStatsUpdate?: (connectionId: string, stats: ConnectionStats) => void;
-  onError?: (connectionId: string, error: Error) => void;
-  onStreamReady?: (connectionId: string, stream: MediaStream) => void;
+/**
+ * Performance metrics tracked by the system.
+ */
+export type PerformanceMetrics = {
+  /** Browser render FPS (Phaser) */
+  renderFps: number;
+  /** Polygon messages received per second */
+  polygonFps: number;
+  /** Frames sent to server per second */
+  frameSendFps: number;
+  /** Estimated round-trip latency in ms */
+  roundTripMs: number;
 };

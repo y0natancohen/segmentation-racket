@@ -9,9 +9,8 @@ opencv-python
 numpy
 pillow
 
-# Python dependencies for polygon generator
-websockets
-asyncio
+# WebSocket server
+websockets>=12.0
 
 # Testing dependencies
 pytest>=7.4.0

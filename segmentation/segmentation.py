@@ -14,8 +14,7 @@ from PIL import Image
 sys.path.append('segmentation/rvm')
 from model import MattingNetwork
 
-# Import the polygon bridge
-from segmentation_polygon_bridge import SegmentationPolygonBridge, set_bridge, send_segmentation_polygon
+# Legacy bridge import removed — polygon data is now sent by segmentation_server.py
 
 # Camera and game dimensions constants
 CAMERA_WIDTH = 1280
@@ -591,25 +590,13 @@ def cleanup_resources(cap, web_server):
         web_server.shutdown()
         web_server.server_close()
 
-def run_segmentation_loop(args, model, dev, cap, bg_img, web_server, latest_frame_data, system_info, polygon_bridge=None):
-    """Main segmentation processing loop"""
+def run_segmentation_loop(args, model, dev, cap, bg_img, web_server, latest_frame_data, system_info):
+    """Main segmentation processing loop (standalone / debug use only)."""
     rec = [None, None, None, None]
     last = time.time()
     fps = 0.0
     frame_count = 0
     timing_stats = TimingStats()
-    
-    # Start polygon bridge server if enabled
-    bridge_thread = None
-    if polygon_bridge:
-        def run_bridge():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(polygon_bridge.start_server())
-        
-        bridge_thread = threading.Thread(target=run_bridge, daemon=True)
-        bridge_thread.start()
-        time.sleep(1)  # Give the server time to start
     
     with torch.inference_mode():
         while True:
@@ -638,28 +625,6 @@ def run_segmentation_loop(args, model, dev, cap, bg_img, web_server, latest_fram
             fps_time = (time.time() - fps_start) * 1000
             timing_stats.add_timing('fps_calculation', fps_time)
             
-            # Send polygon data to bridge if enabled
-            if polygon_bridge and polygon is not None:
-                try:
-                    # Send raw polygon coordinates - scaling will be handled by the bridge
-                    frame_height, frame_width = frame.shape[:2]
-                    
-                    # Send polygon data synchronously using the bridge's method
-                    # Create a new event loop for this call
-                    def send_polygon():
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        loop.run_until_complete(polygon_bridge.send_polygon_data(
-                            polygon,  # Send raw polygon coordinates
-                            frame_size=(frame_width, frame_height)
-                        ))
-                        loop.close()
-                    
-                    # Run in a separate thread to avoid blocking
-                    threading.Thread(target=send_polygon, daemon=True).start()
-                except Exception as e:
-                    print(f"Error sending polygon to bridge: {e}")
-            
             # Update status display
             view = update_status_display(view, fps, args, polygon, system_info, timing_stats)
             
@@ -685,34 +650,14 @@ def run_segmentation_loop(args, model, dev, cap, bg_img, web_server, latest_fram
                       f"Processing={averages['data_prep'] + averages['model_inference'] + averages['thresholding'] + averages['find_contour'] + averages['generate_polygon'] + averages['build_display']:.1f}ms, "
                       f"Total={averages['total_frame']:.1f}ms")
     
-    # Cleanup bridge thread
-    if bridge_thread and bridge_thread.is_alive():
-        # The thread will be cleaned up automatically as a daemon thread
-        pass
-
-def setup_polygon_bridge(args):
-    """Setup polygon bridge for sending data to Phaser game"""
-    if args.polygon_bridge:
-        bridge = SegmentationPolygonBridge(port=args.polygon_bridge_port)
-        set_bridge(bridge)
-        return bridge
-    return None
-
 def main():
-    """Main function - orchestrates setup, runs segmentation loop, and cleanup"""
+    """Main function - orchestrates setup, runs segmentation loop, and cleanup.
+
+    NOTE: For the browser game, use segmentation_server.py instead.
+    This main() is kept for standalone camera-based segmentation testing.
+    """
     args = parse_args()
-    
-    # Check if we should use video communication integration
-    if hasattr(args, 'video_communication') and args.video_communication:
-        # Use video communication integration
-        run_video_communication_segmentation(args)
-    else:
-        # Use traditional camera-based segmentation
-        run_traditional_segmentation(args)
 
-
-def run_traditional_segmentation(args):
-    """Run traditional camera-based segmentation."""
     # Setup components
     model, dev = setup_model(args)
     cap = setup_camera(args)
@@ -720,30 +665,12 @@ def run_traditional_segmentation(args):
     web_server, web_handler, latest_frame_data, system_info = setup_display(args)
     setup_output_directories(args)
     setup_signal_handlers(web_server, cap)
-    polygon_bridge = setup_polygon_bridge(args)
 
-    # Run main segmentation loop
-    run_segmentation_loop(args, model, dev, cap, bg_img, web_server, latest_frame_data, system_info, polygon_bridge)
+    # Run main segmentation loop (polygon_bridge removed — use segmentation_server.py)
+    run_segmentation_loop(args, model, dev, cap, bg_img, web_server, latest_frame_data, system_info)
 
     # Cleanup
     cleanup_resources(cap, web_server)
-    if polygon_bridge:
-        polygon_bridge.stop()
-
-
-def run_video_communication_segmentation(args):
-    """Run segmentation using video communication system."""
-    import asyncio
-    import sys
-    import os
-    
-    # Add video communication path
-    sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'video_send_recv', 'server'))
-    
-    from video_segmentation_integration import run_video_segmentation
-    
-    # Run the video communication segmentation
-    asyncio.run(run_video_segmentation(args))
 
 
 def matte_to_polygon(pha, threshold=0.5, min_area=2000, epsilon_ratio=0.015, return_mask=False, timing_stats=None):
