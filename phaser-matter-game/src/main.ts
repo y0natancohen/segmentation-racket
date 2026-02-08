@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 import { GameWebSocket } from "./GameWebSocket";
+import { polygonArea, simplifyPolygon } from "./geometry";
 import type { PolygonData } from "./types";
 
 // ---------------------------------------------------------------------------
@@ -37,6 +38,7 @@ export class MainScene extends Phaser.Scene {
 
   // HUD
   private hudText!: Phaser.GameObjects.Text;
+  private _lastStatsLogTime = 0;
 
   constructor() {
     super("main");
@@ -96,10 +98,11 @@ export class MainScene extends Phaser.Scene {
 
     // ---- HUD --------------------------------------------------------------
     this.hudText = this.add.text(10, 10, "", {
-      fontSize: "14px",
-      color: "#ffffff",
-      backgroundColor: "rgba(0,0,0,0.6)",
-      padding: { x: 8, y: 4 },
+      fontFamily: "monospace",
+      fontSize: "13px",
+      color: "#00ff00",
+      backgroundColor: "rgba(0,0,0,0.7)",
+      padding: { x: 8, y: 6 },
     });
     this.hudText.setScrollFactor(0);
     this.hudText.setDepth(1000);
@@ -207,10 +210,10 @@ export class MainScene extends Phaser.Scene {
   private initializeWebSocket(): void {
     this.gameWs = new GameWebSocket({
       serverUrl: "ws://localhost:8765",
-      jpegQuality: 0.7,
+      jpegQuality: 0.6,
       captureRate: 15,
-      captureWidth: 640,
-      captureHeight: 360,
+      captureWidth: 512,
+      captureHeight: 288,
       reconnectDelay: 2000,
       maxReconnectAttempts: 0,
     });
@@ -249,6 +252,8 @@ export class MainScene extends Phaser.Scene {
     if (!data || !data.polygon || data.polygon.length < 3) return;
     // Consume so we don't re-apply next frame
     this.latestPolygonData = null;
+
+    const applyStart = performance.now();
 
     const originalW = data.original_image_size[1];
     const originalH = data.original_image_size[0];
@@ -289,7 +294,7 @@ export class MainScene extends Phaser.Scene {
     // Simplify if too many vertices (Ramer-Douglas-Peucker on the client)
     if (scaled.length > MainScene.MAX_POLYGON_VERTS) {
       const before = scaled.length;
-      scaled = MainScene.simplifyPolygon(scaled, MainScene.MAX_POLYGON_VERTS);
+      scaled = simplifyPolygon(scaled, MainScene.MAX_POLYGON_VERTS);
       console.debug(
         "[Main] Simplified polygon: %d -> %d vertices",
         before,
@@ -304,7 +309,7 @@ export class MainScene extends Phaser.Scene {
     }
 
     // Compute signed area to reject degenerate polygons
-    const area = MainScene.polygonArea(scaled);
+    const area = polygonArea(scaled);
     if (Math.abs(area) < MainScene.MIN_POLYGON_AREA) {
       console.warn(
         "[Main] Polygon rejected: area %.1f < min %d",
@@ -388,53 +393,12 @@ export class MainScene extends Phaser.Scene {
     this.polygonGraphics.closePath();
     this.polygonGraphics.fillPath();
     this.polygonGraphics.strokePath();
-  }
 
-  // ---- polygon geometry helpers -------------------------------------------
-
-  /** Signed area of a polygon (positive = clockwise). */
-  private static polygonArea(verts: { x: number; y: number }[]): number {
-    let area = 0;
-    const n = verts.length;
-    for (let i = 0; i < n; i++) {
-      const j = (i + 1) % n;
-      area += verts[i].x * verts[j].y;
-      area -= verts[j].x * verts[i].y;
+    // Record polygon application time
+    const applyMs = performance.now() - applyStart;
+    if (this.gameWs) {
+      this.gameWs.pushApplyTiming(applyMs);
     }
-    return area / 2;
-  }
-
-  /**
-   * Simplify a polygon to at most `maxVerts` vertices using iterative
-   * removal of the vertex that contributes the least area.
-   */
-  private static simplifyPolygon(
-    verts: { x: number; y: number }[],
-    maxVerts: number,
-  ): { x: number; y: number }[] {
-    const pts = verts.slice(); // copy
-    while (pts.length > maxVerts) {
-      // Find the vertex whose removal changes the area the least
-      let minCost = Infinity;
-      let minIdx = 1;
-      for (let i = 0; i < pts.length; i++) {
-        const prev = pts[(i - 1 + pts.length) % pts.length];
-        const curr = pts[i];
-        const next = pts[(i + 1) % pts.length];
-        // Triangle area formed by prev-curr-next
-        const cost = Math.abs(
-          (prev.x * (curr.y - next.y) +
-            curr.x * (next.y - prev.y) +
-            next.x * (prev.y - curr.y)) / 2,
-        );
-        if (cost < minCost) {
-          minCost = cost;
-          minIdx = i;
-        }
-      }
-      pts.splice(minIdx, 1);
-    }
-    return pts;
   }
 
   // ---- ball factory -------------------------------------------------------
@@ -459,13 +423,51 @@ export class MainScene extends Phaser.Scene {
     const conn = ws ? (ws.isConnected ? "Connected" : "Disconnected") : "N/A";
     const polyFps = ws ? ws.polygonFps.toFixed(1) : "0";
     const sendFps = ws ? ws.frameSendFps.toFixed(1) : "0";
-    const rtt = ws ? ws.roundTripMs.toFixed(0) : "-";
     const renderFps = this.game.loop.actualFps.toFixed(0);
     const ballCount = this.balls.length;
 
-    this.hudText.setText(
-      `Render: ${renderFps}fps | Seg: ${polyFps}fps | Send: ${sendFps}fps | RTT: ${rtt}ms | Balls: ${ballCount} | Server: ${conn}`,
-    );
+    const f = (v: number) => v.toFixed(1).padStart(6);
+
+    let text =
+      `Render: ${renderFps}fps | Seg: ${polyFps}fps | Send: ${sendFps}fps | Balls: ${ballCount} | Server: ${conn}\n`;
+
+    if (ws) {
+      const t = ws.detailedTimings;
+      const netHalf = t.network_ms / 2;
+      text +=
+        `--- Latency Breakdown (avg ms, 60-frame window) ---\n` +
+        `Capture: ${f(t.capture_ms)} (draw:${f(t.capture_draw_ms)} enc:${f(t.capture_encode_ms)})\n` +
+        `Net Up:  ~${f(netHalf)} | Decode: ${f(t.server_decode_ms)} | Infer: ${f(t.server_inference_ms)}\n` +
+        `Polygon: ${f(t.server_polygon_ms)} | Net Down: ~${f(netHalf)} | Apply: ${f(t.apply_ms)}\n` +
+        `RTT:     ${f(t.rtt_ms)} | Srv Total: ${f(t.server_total_ms)} | Overall: ${f(t.overall_ms)}`;
+    }
+
+    this.hudText.setText(text);
+
+    // Log detailed stats to console every 5 seconds for easy copy/paste
+    const now = performance.now();
+    if (ws && now - this._lastStatsLogTime >= 5000) {
+      this._lastStatsLogTime = now;
+      const t = ws.detailedTimings;
+      console.log(
+        `[Stats] Latency breakdown (avg ms, 60-frame window):\n` +
+        `  Capture total:         ${t.capture_ms.toFixed(2)} ms\n` +
+        `    drawImage:           ${t.capture_draw_ms.toFixed(2)} ms\n` +
+        `    JPEG encode:         ${t.capture_encode_ms.toFixed(2)} ms\n` +
+        `  Network upload (est):  ${(t.network_ms / 2).toFixed(2)} ms\n` +
+        `  Server decode:         ${t.server_decode_ms.toFixed(2)} ms\n` +
+        `  Server inference:      ${t.server_inference_ms.toFixed(2)} ms\n` +
+        `  Server polygon gen:    ${t.server_polygon_ms.toFixed(2)} ms\n` +
+        `  Server total:          ${t.server_total_ms.toFixed(2)} ms\n` +
+        `  Network download (est):${(t.network_ms / 2).toFixed(2)} ms\n` +
+        `  Polygon apply:         ${t.apply_ms.toFixed(2)} ms\n` +
+        `  ──────────────────────────────\n` +
+        `  Round-trip (RTT):      ${t.rtt_ms.toFixed(2)} ms\n` +
+        `  Network overhead:      ${t.network_ms.toFixed(2)} ms\n` +
+        `  Overall end-to-end:    ${t.overall_ms.toFixed(2)} ms\n` +
+        `  Render: ${renderFps}fps | Seg: ${polyFps}fps | Send: ${sendFps}fps | Balls: ${ballCount}`,
+      );
+    }
   }
 
   // ---- cleanup ------------------------------------------------------------

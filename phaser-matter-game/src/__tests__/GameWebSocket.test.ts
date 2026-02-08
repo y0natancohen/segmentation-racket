@@ -202,4 +202,134 @@ describe("GameWebSocket", () => {
     expect(errors).toHaveLength(1);
     expect(errors[0].message).toContain("parse");
   });
+
+  // ---- Reconnect -----------------------------------------------------------
+
+  test("auto-reconnects after unexpected close", async () => {
+    gws.connect();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(gws.isConnected).toBe(true);
+
+    // Simulate an unexpected server-side close (not intentional disconnect)
+    const ws = (gws as any).ws as MockWebSocket;
+    ws.readyState = MockWebSocket.CLOSED;
+    ws.onclose!(new CloseEvent("close"));
+
+    expect(gws.isConnected).toBe(false);
+
+    // Wait for reconnectDelay (100ms) + microtask for onopen
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Should have reconnected
+    expect(gws.isConnected).toBe(true);
+  });
+
+  test("stops reconnecting after maxReconnectAttempts", async () => {
+    // Track how many WebSocket constructor calls happen
+    let wsConstructions = 0;
+    const OriginalMockWS = (global as any).WebSocket;
+
+    // A WebSocket mock that never opens — simulates a failing connection
+    const FailingWebSocket = class {
+      static CONNECTING = 0;
+      static OPEN = 1;
+      static CLOSING = 2;
+      static CLOSED = 3;
+      readyState = 3; // CLOSED immediately
+      binaryType = "blob";
+      onopen: ((ev: Event) => void) | null = null;
+      onmessage: ((ev: MessageEvent) => void) | null = null;
+      onclose: ((ev: CloseEvent) => void) | null = null;
+      onerror: ((ev: Event) => void) | null = null;
+      url: string;
+
+      constructor(url: string) {
+        this.url = url;
+        wsConstructions++;
+        // Simulate connection failure: fire onclose, never onopen
+        queueMicrotask(() => {
+          if (this.onclose) this.onclose(new CloseEvent("close"));
+        });
+      }
+      send(_data: any) {}
+      close() {
+        this.readyState = 3;
+        if (this.onclose) this.onclose(new CloseEvent("close"));
+      }
+    };
+
+    const failGws = new GameWebSocket({
+      serverUrl: "ws://localhost:9999",
+      jpegQuality: 0.7,
+      captureRate: 15,
+      captureWidth: 320,
+      captureHeight: 240,
+      reconnectDelay: 50,
+      maxReconnectAttempts: 2,
+    });
+
+    // Install failing mock for the connect call
+    (global as any).WebSocket = FailingWebSocket;
+    wsConstructions = 0;
+
+    failGws.connect();
+
+    // Wait enough for initial connect + 2 reconnect attempts (50ms each + microtask)
+    await new Promise((r) => setTimeout(r, 400));
+
+    // Should have made 1 initial + 2 reconnect = 3 total constructions (then stopped)
+    expect(wsConstructions).toBe(3);
+
+    // Restore original mock before next test
+    (global as any).WebSocket = OriginalMockWS;
+    failGws.disconnect();
+  });
+
+  test("intentional disconnect does not trigger reconnect", async () => {
+    // Create a fresh instance to avoid pollution from previous tests
+    const localGws = new GameWebSocket({
+      serverUrl: "ws://localhost:9999",
+      jpegQuality: 0.7,
+      captureRate: 15,
+      captureWidth: 320,
+      captureHeight: 240,
+      reconnectDelay: 100,
+      maxReconnectAttempts: 3,
+    });
+
+    localGws.connect();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(localGws.isConnected).toBe(true);
+
+    // Intentional disconnect
+    localGws.disconnect();
+    expect(localGws.isConnected).toBe(false);
+
+    // Wait long enough for a reconnect to have fired if scheduled
+    await new Promise((r) => setTimeout(r, 200));
+    expect(localGws.isConnected).toBe(false);
+  });
+
+  // ---- Frame drop / isSending guard ----------------------------------------
+
+  test("frame is dropped when not connected", async () => {
+    // Don't connect — call _captureAndSend directly
+    const mockVideo = {
+      readyState: 4,
+      videoWidth: 640,
+      videoHeight: 480,
+    } as unknown as HTMLVideoElement;
+
+    // Access private method
+    await (gws as any)._captureAndSend(mockVideo);
+
+    // No messages should have been sent (ws is null)
+    expect(gws.isConnected).toBe(false);
+  });
+
+  test("performance counters are initially zero", () => {
+    expect(gws.polygonFps).toBe(0);
+    expect(gws.frameSendFps).toBe(0);
+    expect(gws.roundTripMs).toBe(0);
+  });
 });

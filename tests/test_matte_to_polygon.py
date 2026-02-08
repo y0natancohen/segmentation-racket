@@ -71,3 +71,34 @@ class TestMatteToPolygon:
         poly = matte_to_polygon(mask)
         assert poly is not None
         assert poly.shape[0] >= 4  # at least a quad
+
+    # ---- edge cases added for coverage --------------------------------------
+
+    def test_multi_blob_selects_largest(self):
+        """When two blobs are present, the largest contour should be selected."""
+        mask = np.zeros((480, 640), dtype=np.float32)
+        # Small blob (50×50 = 2500 px)
+        mask[10:60, 10:60] = 1.0
+        # Large blob (200×200 = 40000 px)
+        mask[100:300, 200:400] = 1.0
+        poly = matte_to_polygon(mask, min_area=500)
+        assert poly is not None
+        # The polygon's centroid should be near the large blob center (300, 200)
+        cx = poly[:, 0].mean()
+        cy = poly[:, 1].mean()
+        assert 200 < cx < 400, f"Centroid x={cx} not near large blob"
+        assert 100 < cy < 300, f"Centroid y={cy} not near large blob"
+
+    def test_noisy_mask_below_threshold_returns_none(self):
+        """Random noise with values below the threshold should produce None."""
+        rng = np.random.RandomState(42)
+        # Noise in [0, 0.3] — below the default threshold of 0.5
+        mask = rng.uniform(0, 0.3, (480, 640)).astype(np.float32)
+        poly = matte_to_polygon(mask, threshold=0.5, min_area=2000)
+        assert poly is None
+
+    def test_low_alpha_mask_below_threshold(self):
+        """Uniform low-alpha mask (0.4) should produce None at threshold 0.5."""
+        mask = np.full((480, 640), 0.4, dtype=np.float32)
+        poly = matte_to_polygon(mask, threshold=0.5)
+        assert poly is None

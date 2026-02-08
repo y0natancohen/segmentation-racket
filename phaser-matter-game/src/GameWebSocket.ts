@@ -14,14 +14,42 @@
  *  - Auto-reconnect with configurable delay.
  */
 
-import type { PolygonData, GameWebSocketConfig, GameWebSocketEvents } from "./types";
+import type { PolygonData, GameWebSocketConfig, GameWebSocketEvents, DetailedTimingStats } from "./types";
+
+// ---------------------------------------------------------------------------
+// Rolling average helper (fixed-size ring buffer)
+// ---------------------------------------------------------------------------
+class RollingAverage {
+  private samples: Float64Array;
+  private maxSamples: number;
+  private idx = 0;
+  private count = 0;
+
+  constructor(maxSamples = 60) {
+    this.maxSamples = maxSamples;
+    this.samples = new Float64Array(maxSamples);
+  }
+
+  push(value: number): void {
+    this.samples[this.idx] = value;
+    this.idx = (this.idx + 1) % this.maxSamples;
+    if (this.count < this.maxSamples) this.count++;
+  }
+
+  get average(): number {
+    if (this.count === 0) return 0;
+    let sum = 0;
+    for (let i = 0; i < this.count; i++) sum += this.samples[i];
+    return sum / this.count;
+  }
+}
 
 const DEFAULT_CONFIG: GameWebSocketConfig = {
   serverUrl: "ws://localhost:8765",
-  jpegQuality: 0.7,
+  jpegQuality: 0.6,
   captureRate: 15,
-  captureWidth: 640,
-  captureHeight: 360,
+  captureWidth: 512,
+  captureHeight: 288,
   reconnectDelay: 2000,
   maxReconnectAttempts: 0, // unlimited
 };
@@ -39,7 +67,13 @@ export class GameWebSocket {
   private captureCanvas: OffscreenCanvas;
   private captureCtx: OffscreenCanvasRenderingContext2D;
   private captureInterval: ReturnType<typeof setInterval> | null = null;
+  /** requestVideoFrameCallback handle (0 = not active) */
+  private rvfcHandle = 0;
+  /** Whether we're using requestVideoFrameCallback (vs setInterval fallback) */
+  private useRvfc = false;
   private isSending = false;
+  /** Reference to the video element for rvfc re-registration */
+  private _captureVideo: HTMLVideoElement | null = null;
 
   // Latest polygon (single-slot)
   private _latestPolygon: PolygonData | null = null;
@@ -54,6 +88,17 @@ export class GameWebSocket {
   private _lastRoundTripMs = 0;
   /** Timestamp (performance.now) when the last frame was sent */
   private _lastFrameSendTime = 0;
+
+  // Rolling averages for detailed timing (60-sample window)
+  private _avgCapture = new RollingAverage(60);
+  private _avgCaptureDraw = new RollingAverage(60);
+  private _avgCaptureEncode = new RollingAverage(60);
+  private _avgRtt = new RollingAverage(60);
+  private _avgServerDecode = new RollingAverage(60);
+  private _avgServerInference = new RollingAverage(60);
+  private _avgServerPolygon = new RollingAverage(60);
+  private _avgServerTotal = new RollingAverage(60);
+  private _avgApply = new RollingAverage(60);
 
   constructor(config?: Partial<GameWebSocketConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -98,18 +143,45 @@ export class GameWebSocket {
   /** Start capturing frames from a video element and sending them. */
   startFrameCapture(video: HTMLVideoElement): void {
     this.stopFrameCapture(); // idempotent
-    const intervalMs = 1000 / this.config.captureRate;
-    console.debug(
-      "[GameWS] Starting frame capture at %.1f fps (interval=%dms), capture size=%dx%d",
-      this.config.captureRate,
-      intervalMs,
-      this.config.captureWidth,
-      this.config.captureHeight,
-    );
+    this._captureVideo = video;
 
-    this.captureInterval = setInterval(() => {
-      this._captureAndSend(video);
-    }, intervalMs);
+    // Prefer requestVideoFrameCallback for frame-accurate pacing
+    if ("requestVideoFrameCallback" in video) {
+      this.useRvfc = true;
+      console.debug(
+        "[GameWS] Starting frame capture via requestVideoFrameCallback, capture size=%dx%d",
+        this.config.captureWidth,
+        this.config.captureHeight,
+      );
+      this._rvfcLoop(video);
+    } else {
+      // Fallback to setInterval
+      this.useRvfc = false;
+      const intervalMs = 1000 / this.config.captureRate;
+      console.debug(
+        "[GameWS] Starting frame capture at %.1f fps (interval=%dms, setInterval fallback), capture size=%dx%d",
+        this.config.captureRate,
+        intervalMs,
+        this.config.captureWidth,
+        this.config.captureHeight,
+      );
+      this.captureInterval = setInterval(() => {
+        this._captureAndSend(video);
+      }, intervalMs);
+    }
+  }
+
+  /** requestVideoFrameCallback loop — re-registers itself each frame. */
+  private _rvfcLoop(video: HTMLVideoElement): void {
+    this.rvfcHandle = (video as any).requestVideoFrameCallback(
+      (_now: number, _metadata: any) => {
+        this._captureAndSend(video);
+        // Re-register for next video frame
+        if (this._captureVideo === video) {
+          this._rvfcLoop(video);
+        }
+      },
+    );
   }
 
   /** Stop frame capture loop. */
@@ -117,8 +189,13 @@ export class GameWebSocket {
     if (this.captureInterval !== null) {
       clearInterval(this.captureInterval);
       this.captureInterval = null;
-      console.debug("[GameWS] Frame capture stopped");
     }
+    if (this.rvfcHandle !== 0 && this._captureVideo) {
+      (this._captureVideo as any).cancelVideoFrameCallback(this.rvfcHandle);
+      this.rvfcHandle = 0;
+    }
+    this._captureVideo = null;
+    console.debug("[GameWS] Frame capture stopped");
   }
 
   /** Get the latest polygon data (may be null). Does NOT consume it. */
@@ -146,6 +223,35 @@ export class GameWebSocket {
 
   /** Performance: latest round-trip latency estimate in ms. */
   get roundTripMs(): number { return this._lastRoundTripMs; }
+
+  /** Detailed rolling-average timing breakdown for the full pipeline. */
+  get detailedTimings(): DetailedTimingStats {
+    const capture_ms = this._avgCapture.average;
+    const capture_draw_ms = this._avgCaptureDraw.average;
+    const capture_encode_ms = this._avgCaptureEncode.average;
+    const rtt_ms = this._avgRtt.average;
+    const server_total_ms = this._avgServerTotal.average;
+    const apply_ms = this._avgApply.average;
+    const network_ms = Math.max(0, rtt_ms - server_total_ms);
+    return {
+      capture_ms,
+      capture_draw_ms,
+      capture_encode_ms,
+      server_decode_ms: this._avgServerDecode.average,
+      server_inference_ms: this._avgServerInference.average,
+      server_polygon_ms: this._avgServerPolygon.average,
+      server_total_ms,
+      rtt_ms,
+      network_ms,
+      apply_ms,
+      overall_ms: capture_ms + rtt_ms + apply_ms,
+    };
+  }
+
+  /** Called by MainScene after applying a polygon to record apply time. */
+  pushApplyTiming(ms: number): void {
+    this._avgApply.push(ms);
+  }
 
   // ---- internals ----------------------------------------------------------
 
@@ -208,6 +314,16 @@ export class GameWebSocket {
       // Round-trip latency estimate
       if (this._lastFrameSendTime > 0) {
         this._lastRoundTripMs = performance.now() - this._lastFrameSendTime;
+        this._avgRtt.push(this._lastRoundTripMs);
+      }
+
+      // Accumulate server-side timings
+      const st = parsed.server_timings;
+      if (st) {
+        this._avgServerDecode.push(st.decode_ms);
+        this._avgServerInference.push(st.inference_ms);
+        this._avgServerPolygon.push(st.polygon_ms);
+        this._avgServerTotal.push(st.total_ms);
       }
 
       console.debug(
@@ -247,6 +363,8 @@ export class GameWebSocket {
 
     this.isSending = true;
     try {
+      const captureStart = performance.now();
+
       // Draw video frame to offscreen canvas (downscaled)
       this.captureCtx.drawImage(
         video,
@@ -254,6 +372,10 @@ export class GameWebSocket {
         this.config.captureWidth,
         this.config.captureHeight,
       );
+
+      const drawEnd = performance.now();
+      const drawMs = drawEnd - captureStart;
+      this._avgCaptureDraw.push(drawMs);
 
       // Encode as JPEG blob
       const blob = await this.captureCanvas.convertToBlob({
@@ -263,17 +385,25 @@ export class GameWebSocket {
 
       // Send binary
       const buffer = await blob.arrayBuffer();
+
+      const encodeMs = performance.now() - drawEnd;
+      this._avgCaptureEncode.push(encodeMs);
+
+      const captureMs = performance.now() - captureStart;
+      this._avgCapture.push(captureMs);
+
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send(buffer);
         this._frameSendCount++;
         this._lastFrameSendTime = performance.now();
         console.debug(
-          "[GameWS] Frame sent: %d bytes JPEG (video %dx%d -> %dx%d)",
+          "[GameWS] Frame sent: %d bytes JPEG (video %dx%d -> %dx%d) capture=%.1fms",
           buffer.byteLength,
           video.videoWidth,
           video.videoHeight,
           this.config.captureWidth,
           this.config.captureHeight,
+          captureMs,
         );
         this.events.onFrameSent?.();
       }

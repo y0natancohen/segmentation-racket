@@ -57,12 +57,40 @@ def load_model(model_path: str, device: torch.device, fp16: bool):
         urllib.request.urlretrieve(url, model_path)
         logger.info("Model weights downloaded.")
 
+    # CUDA performance knobs
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+        logger.info("CUDA perf flags: cudnn.benchmark=True, TF32 enabled")
+
     model = MattingNetwork("mobilenetv3").eval().to(device)
     model.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
     if fp16 and device.type == "cuda":
         model = model.half()
     logger.info("RVM model loaded on %s (fp16=%s)", device, fp16)
+
+    # Warmup pass — stabilizes CUDA kernel selection and JIT caches
+    if device.type == "cuda":
+        _warmup_model(model, device, fp16)
+
     return model
+
+
+def _warmup_model(model, device: torch.device, fp16: bool, n_frames: int = 5):
+    """Run a few dummy frames through the model to warm up CUDA/cuDNN."""
+    logger.info("Running %d warmup inference passes...", n_frames)
+    h, w = 288, 512  # match default client capture size
+    rec = [None, None, None, None]
+    for i in range(n_frames):
+        dummy = torch.randn(1, 3, h, w, device=device)
+        if fp16:
+            dummy = dummy.half()
+        with torch.inference_mode():
+            _fgr, _pha, *rec = model(dummy, *rec, 0.25)
+    # Sync to ensure all kernels finished
+    torch.cuda.synchronize()
+    logger.info("Warmup complete.")
 
 
 def to_torch_image(frame_bgr: np.ndarray, device: torch.device, fp16: bool):
@@ -137,7 +165,7 @@ class SegmentationSession:
         self.timing.add_timing("model_inference", infer_ms)
 
         # Alpha matte to polygon
-        pha_np = pha[0, 0].cpu().numpy()  # float32 [0,1]
+        pha_np = pha[0, 0].float().cpu().numpy()  # ensure float32 [0,1] even under fp16
 
         # Log alpha matte statistics so we can diagnose threshold issues
         pha_min = float(pha_np.min())
@@ -157,6 +185,7 @@ class SegmentationSession:
         )
 
         t_poly = time.time()
+        poly_ms = (t_poly - t_infer) * 1000
         total_ms = (t_poly - t0) * 1000
         self.timing.add_timing("total_frame", total_ms)
 
@@ -206,6 +235,12 @@ class SegmentationSession:
             "polygon": polygon.tolist(),
             "timestamp": time.time(),
             "original_image_size": [h, w],
+            "server_timings": {
+                "decode_ms": round(decode_ms, 2),
+                "inference_ms": round(infer_ms, 2),
+                "polygon_ms": round(poly_ms, 2),
+                "total_ms": round(total_ms, 2),
+            },
         }
 
 
@@ -225,67 +260,61 @@ async def handle_client(websocket, model, device, fp16, dsr,
         polygon_threshold, polygon_min_area, polygon_epsilon,
     )
 
-    # Single-slot frame buffer & processing flag
-    latest_frame: Optional[bytes] = None
-    is_processing = False
-    lock = asyncio.Lock()
     frames_received = 0
     frames_dropped = 0
 
     loop = asyncio.get_running_loop()
 
-    async def process_latest():
-        """Process the latest buffered frame if available."""
-        nonlocal latest_frame, is_processing
-        async with lock:
-            if latest_frame is None or is_processing:
-                return
-            frame_bytes = latest_frame
-            latest_frame = None  # consume
-            is_processing = True
+    # Single-slot queue: putting a new frame evicts any unconsumed one.
+    frame_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=1)
 
-        try:
-            result = await loop.run_in_executor(
-                executor, session.process_frame, frame_bytes
-            )
-            if result is not None:
-                msg = json.dumps(result)
-                await websocket.send(msg)
-                logger.debug(
-                    "[ws] Sent polygon (%d verts, %d bytes JSON) to %s",
-                    len(result["polygon"]), len(msg), addr,
+    async def worker():
+        """Persistent worker — consumes from the queue and sends results."""
+        while True:
+            frame_bytes = await frame_queue.get()
+            try:
+                result = await loop.run_in_executor(
+                    executor, session.process_frame, frame_bytes
                 )
-            else:
-                logger.debug("[ws] No polygon to send for this frame")
-        except Exception:
-            logger.exception("Error processing frame")
-        finally:
-            async with lock:
-                is_processing = False
-            # If a newer frame arrived while we were busy, process it now
-            if latest_frame is not None:
-                asyncio.create_task(process_latest())
+                if result is not None:
+                    msg = json.dumps(result)
+                    await websocket.send(msg)
+                    logger.debug(
+                        "[ws] Sent polygon (%d verts, %d bytes JSON) to %s",
+                        len(result["polygon"]), len(msg), addr,
+                    )
+                else:
+                    logger.debug("[ws] No polygon to send for this frame")
+            except websockets.exceptions.ConnectionClosed:
+                break
+            except Exception:
+                logger.exception("Error processing frame")
+
+    worker_task = asyncio.create_task(worker())
 
     try:
         async for message in websocket:
             if isinstance(message, (bytes, bytearray)):
                 frames_received += 1
-                async with lock:
-                    was_overwritten = latest_frame is not None
-                    latest_frame = bytes(message)  # single-slot overwrite
-                if was_overwritten:
-                    frames_dropped += 1
-                    logger.debug(
-                        "[ws] Frame overwritten (dropped) — received=%d dropped=%d from %s",
-                        frames_received, frames_dropped, addr,
-                    )
-                else:
-                    logger.debug(
-                        "[ws] Frame buffered (%d bytes) — received=%d from %s",
-                        len(message), frames_received, addr,
-                    )
-                # Kick off processing (no-op if already running)
-                asyncio.create_task(process_latest())
+                frame = bytes(message)
+
+                # Single-slot: evict stale frame if queue is full
+                if frame_queue.full():
+                    try:
+                        frame_queue.get_nowait()
+                        frames_dropped += 1
+                        logger.debug(
+                            "[ws] Frame evicted (dropped) — received=%d dropped=%d from %s",
+                            frames_received, frames_dropped, addr,
+                        )
+                    except asyncio.QueueEmpty:
+                        pass
+
+                frame_queue.put_nowait(frame)
+                logger.debug(
+                    "[ws] Frame queued (%d bytes) — received=%d from %s",
+                    len(frame), frames_received, addr,
+                )
             elif isinstance(message, str):
                 logger.debug("Text message from client: %s", message[:120])
             else:
@@ -293,6 +322,11 @@ async def handle_client(websocket, model, device, fp16, dsr,
     except websockets.exceptions.ConnectionClosed:
         pass
     finally:
+        worker_task.cancel()
+        try:
+            await worker_task
+        except asyncio.CancelledError:
+            pass
         logger.info(
             "Client disconnected: %s (total frames received=%d, dropped=%d)",
             addr, frames_received, frames_dropped,
@@ -378,7 +412,7 @@ def parse_args():
     p.add_argument("--dsr", type=float, default=0.25, help="RVM downsample ratio")
     p.add_argument("--polygon_threshold", type=float, default=0.5)
     p.add_argument("--polygon_min_area", type=int, default=2000)
-    p.add_argument("--polygon_epsilon", type=float, default=0.002,
+    p.add_argument("--polygon_epsilon", type=float, default=0.001,
                     help="Douglas-Peucker epsilon ratio")
     p.add_argument("--max_workers", type=int, default=2,
                     help="Thread pool size for inference")

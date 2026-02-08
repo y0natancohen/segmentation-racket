@@ -1,0 +1,51 @@
+# Cursor ignore file (gitignore syntax).
+# Excluded paths won’t be indexed / referenced by Cursor AI features.
+
+# --- Cursor / editor artifacts ---
+.cursor/debug.log
+
+# --- Python: environments, caches, build artifacts ---
+.venv/
+venv/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.pytype/
+.ruff_cache/
+.cache/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# --- Node / frontend: deps + build outputs ---
+**/node_modules/
+phaser-matter-game/dist/
+phaser-matter-game/.vite/
+phaser-matter-game/coverage/
+
+# --- Model weights / large binaries (keep code, skip weights) ---
+models/
+segmentation/models/
+**/*.pth
+
+# --- Logs / recordings / dumps ---
+*.log
+*.tmp
+*.dump
+*.trace
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
