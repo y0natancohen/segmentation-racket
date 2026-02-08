@@ -30,6 +30,7 @@ from typing import Optional
 import cv2
 import numpy as np
 import torch
+from torchvision.io import decode_jpeg
 
 from segmentation.rvm.model import MattingNetwork
 from segmentation.segmentation import matte_to_polygon, TimingStats
@@ -71,6 +72,17 @@ def load_model(model_path: str, device: torch.device, fp16: bool):
         model = model.half()
     logger.info("RVM model loaded on %s (fp16=%s)", device, fp16)
 
+    # JIT script + freeze — eliminates Python dispatch overhead per forward
+    # call and optimises module attribute lookups (matches official RVM
+    # inference_speed_test.py).
+    if device.type == "cuda":
+        try:
+            model = torch.jit.script(model)
+            model = torch.jit.freeze(model)
+            logger.info("Model JIT-scripted and frozen")
+        except Exception as e:
+            logger.warning("JIT script/freeze failed, falling back to eager: %s", e)
+
     # Warmup pass — stabilizes CUDA kernel selection and JIT caches
     if device.type == "cuda":
         _warmup_model(model, device, fp16)
@@ -97,10 +109,31 @@ def _warmup_model(model, device: torch.device, fp16: bool, n_frames: int = 5):
 def to_torch_image(frame_bgr: np.ndarray, device: torch.device, fp16: bool):
     """Convert an OpenCV BGR frame to a batched torch tensor."""
     rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-    t = torch.from_numpy(rgb).to(device).permute(2, 0, 1).float() / 255.0
+    t = torch.from_numpy(rgb).to(device, non_blocking=True).permute(2, 0, 1).float() / 255.0
     if fp16 and device.type == "cuda":
         t = t.half()
     return t.unsqueeze(0)
+
+
+def _gpu_decode_jpeg(jpeg_bytes: bytes, device: torch.device, fp16: bool):
+    """Decode JPEG bytes directly on GPU via nvJPEG (torchvision).
+
+    Returns (src, h, w) where src is [1,3,H,W] float/half on *device*,
+    or None if decoding fails.
+    """
+    try:
+        jpeg_tensor = torch.frombuffer(bytearray(jpeg_bytes), dtype=torch.uint8)
+        # decode_jpeg with device='cuda' uses nvJPEG — returns [3,H,W] uint8 RGB
+        decoded = decode_jpeg(jpeg_tensor, device=device)
+        h, w = decoded.shape[1], decoded.shape[2]
+        if fp16:
+            src = decoded.half().div_(255.0).unsqueeze(0)
+        else:
+            src = decoded.float().div_(255.0).unsqueeze(0)
+        return src, h, w
+    except Exception as e:
+        logger.debug("[frame] GPU JPEG decode failed, will fall back to CPU: %s", e)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +145,7 @@ class SegmentationSession:
 
     def __init__(self, model, device: torch.device, fp16: bool, dsr: float,
                  polygon_threshold: float, polygon_min_area: int,
-                 polygon_epsilon: float):
+                 polygon_epsilon: float, profile: bool = False):
         self.model = model
         self.device = device
         self.fp16 = fp16
@@ -120,6 +153,7 @@ class SegmentationSession:
         self.polygon_threshold = polygon_threshold
         self.polygon_min_area = polygon_min_area
         self.polygon_epsilon = polygon_epsilon
+        self.profile = profile
 
         # RVM recurrent state
         self.rec = [None, None, None, None]
@@ -130,6 +164,9 @@ class SegmentationSession:
         self.polygon_count = 0
         self.null_polygon_count = 0
         self.last_stats_time = time.time()
+
+        # GPU profiling (CUDA Event timing) — only active when --profile
+        self._gpu_kernel_times: list[float] = []  # ms per frame
 
     # ---- runs in thread pool (blocking) ----
     def process_frame(self, jpeg_bytes: bytes, frame_timestamp: float = 0) -> Optional[dict]:
@@ -143,27 +180,55 @@ class SegmentationSession:
 
         logger.debug("[frame] Received %d bytes JPEG", len(jpeg_bytes))
 
-        buf = np.frombuffer(jpeg_bytes, dtype=np.uint8)
-        frame = cv2.imdecode(buf, cv2.IMREAD_COLOR)
-        if frame is None:
-            logger.warning("[frame] cv2.imdecode FAILED for %d bytes", len(jpeg_bytes))
-            return None
+        # Decode JPEG — use GPU (nvJPEG) on CUDA, fall back to CPU
+        gpu_decoded = None
+        if self.device.type == "cuda":
+            gpu_decoded = _gpu_decode_jpeg(jpeg_bytes, self.device, self.fp16)
+
+        if gpu_decoded is not None:
+            src, frame_h, frame_w = gpu_decoded
+        else:
+            # CPU fallback: cv2.imdecode + to_torch_image
+            buf = np.frombuffer(jpeg_bytes, dtype=np.uint8)
+            frame = cv2.imdecode(buf, cv2.IMREAD_COLOR)
+            if frame is None:
+                logger.warning("[frame] cv2.imdecode FAILED for %d bytes", len(jpeg_bytes))
+                return None
+            frame_h, frame_w = frame.shape[:2]
+            src = to_torch_image(frame, self.device, self.fp16)
 
         t_decode = time.time()
         decode_ms = (t_decode - t0) * 1000
         self.timing.add_timing("data_prep", decode_ms)
-        logger.debug("[frame] Decoded %dx%d frame in %.1fms", frame.shape[1], frame.shape[0], decode_ms)
+        logger.debug("[frame] Decoded %dx%d frame in %.1fms", frame_w, frame_h, decode_ms)
 
-        # Model inference
-        src = to_torch_image(frame, self.device, self.fp16)
+        # CUDA Event timing for precise GPU kernel measurement
+        if self.profile and self.device.type == "cuda":
+            evt_start = torch.cuda.Event(enable_timing=True)
+            evt_end = torch.cuda.Event(enable_timing=True)
+            evt_start.record()
+
         with torch.inference_mode():
             fgr, pha, *self.rec = self.model(
                 src, *self.rec, self.dsr
             )
 
+        if self.profile and self.device.type == "cuda":
+            evt_end.record()
+
+        # Synchronize so wall-clock timing reflects actual GPU completion
+        if self.device.type == "cuda":
+            torch.cuda.synchronize()
+
         t_infer = time.time()
         infer_ms = (t_infer - t_decode) * 1000
         self.timing.add_timing("model_inference", infer_ms)
+
+        # Record GPU kernel time from CUDA Events
+        if self.profile and self.device.type == "cuda":
+            gpu_kernel_ms = evt_start.elapsed_time(evt_end)
+            self._gpu_kernel_times.append(gpu_kernel_ms)
+            self.timing.add_timing("gpu_kernel", gpu_kernel_ms)
 
         # Alpha matte to polygon
         pha_np = pha[0, 0].float().cpu().numpy()  # ensure float32 [0,1] even under fp16
@@ -214,15 +279,38 @@ class SegmentationSession:
             elapsed = now - self.last_stats_time
             fps = self.frame_count / elapsed
             avgs = self.timing.get_average_timings()
-            logger.info(
+            base_msg = (
                 "FPS=%.1f | frames=%d polygons=%d nulls=%d | "
-                "decode=%.1fms infer=%.1fms poly=%.1fms total=%.1fms",
+                "decode=%.1fms infer=%.1fms poly=%.1fms total=%.1fms"
+            )
+            base_args = (
                 fps, self.frame_count, self.polygon_count, self.null_polygon_count,
                 avgs.get("data_prep", 0),
                 avgs.get("model_inference", 0),
                 avgs.get("generate_polygon", 0),
                 avgs.get("total_frame", 0),
             )
+
+            if self.profile and self.device.type == "cuda":
+                # GPU profiling extras
+                gpu_kernel_avg = avgs.get("gpu_kernel", 0)
+                infer_avg = avgs.get("model_inference", 0)
+                cpu_overhead = max(0, infer_avg - gpu_kernel_avg)
+                gpu_mem_mb = torch.cuda.memory_allocated() / (1024 * 1024)
+                gpu_reserved_mb = torch.cuda.memory_reserved() / (1024 * 1024)
+                total_avg = avgs.get("total_frame", 0)
+                gpu_util_pct = (gpu_kernel_avg / total_avg * 100) if total_avg > 0 else 0
+
+                logger.info(
+                    base_msg + " | GPU: kernel=%.1fms overhead=%.1fms util=%.0f%% mem=%.0fMB/%.0fMB",
+                    *base_args,
+                    gpu_kernel_avg, cpu_overhead, gpu_util_pct,
+                    gpu_mem_mb, gpu_reserved_mb,
+                )
+                self._gpu_kernel_times.clear()
+            else:
+                logger.info(base_msg, *base_args)
+
             self.frame_count = 0
             self.polygon_count = 0
             self.null_polygon_count = 0
@@ -231,11 +319,10 @@ class SegmentationSession:
         if polygon is None:
             return None
 
-        h, w = frame.shape[:2]
         return {
             "polygon": polygon.tolist(),
             "timestamp": time.time(),
-            "original_image_size": [h, w],
+            "original_image_size": [frame_h, frame_w],
             "frame_timestamp": int(frame_timestamp),
             "server_timings": {
                 "decode_ms": round(decode_ms, 2),
@@ -252,7 +339,7 @@ class SegmentationSession:
 
 async def handle_client(websocket, model, device, fp16, dsr,
                         polygon_threshold, polygon_min_area,
-                        polygon_epsilon, executor):
+                        polygon_epsilon, executor, profile=False):
     """Handle a single WebSocket client connection."""
     addr = websocket.remote_address
     logger.info("Client connected: %s", addr)
@@ -260,6 +347,7 @@ async def handle_client(websocket, model, device, fp16, dsr,
     session = SegmentationSession(
         model, device, fp16, dsr,
         polygon_threshold, polygon_min_area, polygon_epsilon,
+        profile=profile,
     )
 
     frames_received = 0
@@ -369,6 +457,19 @@ async def run_server(args):
 
     model = load_model(args.model_path, device, args.fp16)
 
+    # Probe GPU JPEG decode availability (torchvision decode_jpeg + nvJPEG)
+    if device.type == "cuda":
+        try:
+            _probe = torch.zeros(100, dtype=torch.uint8)
+            # Intentionally invalid — we just check the code path doesn't
+            # error on missing nvJPEG; the RuntimeError from bad data is fine.
+            decode_jpeg(_probe, device=device)
+        except RuntimeError:
+            # Expected: bad JPEG data, but nvJPEG call succeeded → available
+            logger.info("GPU JPEG decode available (torchvision decode_jpeg + nvJPEG)")
+        except Exception as e:
+            logger.warning("GPU JPEG decode NOT available, will use CPU: %s", e)
+
     # Thread pool for blocking model inference (1 thread per client is enough)
     executor = ThreadPoolExecutor(max_workers=args.max_workers)
 
@@ -380,6 +481,7 @@ async def run_server(args):
             websocket, model, device, args.fp16, args.dsr,
             args.polygon_threshold, args.polygon_min_area,
             args.polygon_epsilon, executor,
+            profile=args.profile,
         )
 
     stop = asyncio.get_running_loop().create_future()
@@ -425,12 +527,14 @@ def parse_args():
     p.add_argument("--polygon_min_area", type=int, default=2000)
     p.add_argument("--polygon_epsilon", type=float, default=0.001,
                     help="Douglas-Peucker epsilon ratio")
-    p.add_argument("--max_workers", type=int, default=2,
-                    help="Thread pool size for inference")
+    p.add_argument("--max_workers", type=int, default=1,
+                    help="Thread pool size for inference (1 avoids GIL contention)")
     p.add_argument("--tracemalloc", action="store_true",
                     help="Enable tracemalloc for memory debugging")
     p.add_argument("--debug", action="store_true",
                     help="Enable DEBUG-level logging (very verbose, per-frame)")
+    p.add_argument("--profile", action="store_true",
+                    help="Enable GPU profiling (CUDA Event timing + memory logging)")
     return p.parse_args()
 
 
@@ -442,6 +546,8 @@ def main():
     if args.tracemalloc:
         tracemalloc.start()
         logger.info("tracemalloc enabled")
+    if args.profile:
+        logger.info("GPU profiling enabled (CUDA Event timing + memory)")
     asyncio.run(run_server(args))
 
 
