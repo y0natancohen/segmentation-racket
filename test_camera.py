@@ -19,13 +19,6 @@ import time
 import cv2
 from flask import Flask, Response, render_template_string
 
-# Suppress OpenCV warnings
-os.environ['OPENCV_LOG_LEVEL'] = 'ERROR'
-try:
-    cv2.setLogLevel(0)  # 0 = SILENT
-except AttributeError:
-    pass
-
 
 def parse_args():
     p = argparse.ArgumentParser(description="Simple camera capture and display test")

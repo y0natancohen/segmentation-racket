@@ -33,18 +33,6 @@ import numpy as np
 import torch
 from flask import Flask, Response, render_template_string
 
-# Suppress OpenCV warnings
-os.environ['OPENCV_LOG_LEVEL'] = 'ERROR'
-try:
-    cv2.setLogLevel(0)  # 0 = SILENT, 1 = ERROR, 2 = WARN, 3 = INFO, 4 = DEBUG
-except AttributeError:
-    # Older OpenCV versions don't have setLogLevel
-    pass
-
-# ---- path setup (same as segmentation_server.py) -------------------------
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "segmentation", "rvm"))
-sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
-
 from segmentation_server import (       # noqa: E402
     SegmentationSession,
     load_model,
